@@ -957,7 +957,7 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 	padding-bottom: calc(var(--rl-player-bar-inset, 98px) * .4 );
 }
 
-/*removes new "border"*/ 
+/*removes now-playing artwork border*/ 
 ._artworkTilt_1c6d5cc:after{
 	box-shadow: none;
 }
