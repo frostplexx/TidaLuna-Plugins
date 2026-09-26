@@ -41,10 +41,8 @@ body.rl-backdrop-active [class*="_nowPlayingContainer"] {
 }
 
 /* now-playing renders above the backdrop */
-[data-test="new-now-playing"] > header,
-[data-test="new-now-playing"] > [class*="_content_"] {
-	position: relative;
-	z-index: 1;
+[data-test="new-now-playing"] > header{
+	z-index: 2;
 }
 
 /* engine animates on RAF loop*/
