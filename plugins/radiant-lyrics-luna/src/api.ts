@@ -218,11 +218,7 @@ function artworkSearchUrl(
 	return `https://ama.trainswift.net/api/v1/artwork/search?${q}`;
 }
 
-/**
- * Lookups keyed by track, including misses (`null`): most tracks have no animated
- * art, and re-opening the lyrics view or revisiting a track would otherwise hit
- * the network again for an answer that does not change.
- */
+// Cached including misses; most tracks have none and the answer never changes.
 const animatedArtworkCache = new Map<string, AnimatedArtwork | null>();
 const ARTWORK_CACHE_MAX = 200;
 
@@ -232,8 +228,7 @@ export async function fetchAnimatedArtwork(
 	album?: string,
 	signal?: AbortSignal,
 ): Promise<AnimatedArtwork | null> {
-	// Keyed by album, matching artworkKey() in index.ts: the endpoint returns the
-	// album's artwork, so every track on one album resolves to the same entry.
+	// Keyed by album, matching artworkKey() in index.ts.
 	const cacheKey =
 		album && album.trim() !== ""
 			? `${artist}\u0000${album.trim()}`
@@ -244,7 +239,6 @@ export async function fetchAnimatedArtwork(
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 10000);
-	// Caller-driven cancellation (track changed) on top of the timeout.
 	const onAbort = () => controller.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	if (signal?.aborted) controller.abort();
@@ -277,7 +271,7 @@ export async function fetchAnimatedArtwork(
 	};
 
 	const remember = (result: AnimatedArtwork | null): AnimatedArtwork | null => {
-		// Never cache a cancelled attempt — it says nothing about the track.
+		// A cancelled attempt says nothing about the track.
 		if (controller.signal.aborted) return result;
 		if (animatedArtworkCache.size >= ARTWORK_CACHE_MAX) {
 			const oldest = animatedArtworkCache.keys().next().value;
