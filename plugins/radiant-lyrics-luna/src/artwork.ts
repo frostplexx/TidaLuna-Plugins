@@ -3,8 +3,7 @@
 //   Orchestration (track change, visibility, settings) lives in index.ts.
 
 import { Tracer } from "@luna/core";
-// The light build drops alt-audio, subtitles and EME — none of which a muted
-// artwork loop uses — and saves ~230kB of bundle. See hls-light.d.ts for types.
+// Light build: no alt-audio/subtitles/EME needed here. Types in hls-light.d.ts.
 import Hls from "hls.js/light";
 
 import { fetchAnimatedArtwork } from "./api";
@@ -15,27 +14,37 @@ const { trace } = Tracer("[Radiant Lyrics]");
 export const ART_TILE_SELECTOR = '[data-test="now-playing-artwork"]';
 /** Elements that cannot render child nodes, so the video must go beside them. */
 const REPLACED_TAGS = new Set(["IMG", "PICTURE", "VIDEO", "CANVAS", "SVG"]);
+// Keeps ABR off Apple's 2160x2160 rung (91MB a loop). Bandwidth only, not CPU.
+const ART_MAX_DPR = 1;
+const ART_NATIVE_FPS = 25;
 
 export class AnimatedArtworkLayer {
 	private video: HTMLVideoElement | null = null;
 	private hls: Hls | null = null;
 	private tile: HTMLElement | null = null;
-	/** Where the video actually lives — the tile itself, or its parent when the tile is a replaced element. */
+	/** The tile, or its parent when the tile is a replaced element. */
 	private mount: HTMLElement | null = null;
 	private resizeObs: ResizeObserver | null = null;
 	private resizeRaf = 0;
 	private artwork: { url: string; url_tall: string } | null = null;
-	/** Identity of the artwork currently mounted (see artworkKey() in index.ts). */
+	/** See artworkKey() in index.ts. */
 	private artworkKey: string | null = null;
 	private liveSrc: string | null = null;
 	private loadToken = 0;
 	private nowPlayingVisible = true;
-	/** True when we set `position: relative` on the mount and owe a revert. */
+	/** True when the mount's inline position is ours to revert. */
 	private mountPositioned = false;
-	/** Aborts the in-flight lookup when the track changes underneath us. */
 	private fetchAbort: AbortController | null = null;
+	private nativeFps = ART_NATIVE_FPS;
 
-	/** Give TIDAL's element back the inline style we found it with. */
+	// CPU tracks presented fps and nothing else, so this is the only perf knob.
+	private applyRate(): void {
+		if (!this.video) return;
+		const target = Number(settings.animatedArtworkFps) || ART_NATIVE_FPS;
+		const rate = Math.min(1, Math.max(0.05, target / this.nativeFps));
+		if (this.video.playbackRate !== rate) this.video.playbackRate = rate;
+	}
+
 	private releaseMount(): void {
 		if (this.mount && this.mountPositioned) this.mount.style.removeProperty("position");
 		this.mountPositioned = false;
@@ -53,15 +62,13 @@ export class AnimatedArtworkLayer {
 
 	private host(tile: HTMLElement): void {
 		this.tile = tile;
-		// TIDAL's artwork tile is an <img>: a replaced element never renders children,
-		// so an appended <video> would vanish without error. Host it in the parent and
-		// position it over the tile instead.
+		// The tile is an <img>; a replaced element silently drops children, so
+		// host the video in the parent and lay it over the tile.
 		const replaced = REPLACED_TAGS.has(tile.tagName);
 		const mount = replaced ? tile.parentElement : tile;
 		if (mount !== this.mount) this.releaseMount();
 		this.mount = mount;
 		if (this.mount && getComputedStyle(this.mount).position === "static") {
-			// Remember that the inline style is ours so teardown can undo it.
 			this.mountPositioned = true;
 			this.mount.style.position = "relative";
 		}
@@ -84,12 +91,11 @@ export class AnimatedArtworkLayer {
 
 	private watchSizing(): void {
 		if (!this.tile) return;
-		// host() can re-run against a fresh tile, so always re-target the observer.
+		// host() can re-run against a fresh tile.
 		this.resizeObs?.disconnect();
 		this.resizeObs ??= new ResizeObserver(() => {
 			if (!this.artwork || !this.video) return;
-			// Deferred to the next frame: syncGeometry reads layout and then writes
-			// styles, which inside the callback would retrigger the observer.
+			// Deferred: syncGeometry writes styles and would retrigger us.
 			if (this.resizeRaf !== 0) return;
 			this.resizeRaf = requestAnimationFrame(() => {
 				this.resizeRaf = 0;
@@ -102,14 +108,8 @@ export class AnimatedArtworkLayer {
 	}
 
 	/**
-	 * Resolve and mount the artwork identified by `key`. Uses the exact album
-	 * first and retries without it on a miss (handled inside the fetch).
-	 *
-	 * The currently playing video is deliberately left alone until a replacement
-	 * is known: animated artwork belongs to the album, so skipping tracks within
-	 * one must not tear the video down and refetch it. Returns false when the
-	 * attempt could not be completed because no artwork tile was on screen, so
-	 * the caller can retry once the view appears.
+	 * Mount the artwork for `key`, leaving any playing video alone until a
+	 * replacement resolves. False means no tile was on screen, so retry later.
 	 */
 	async load(
 		key: string,
@@ -123,14 +123,12 @@ export class AnimatedArtworkLayer {
 			return true;
 		}
 		const token = ++this.loadToken;
-		// Stop the previous lookup from holding a connection open for a track we left.
 		this.fetchAbort?.abort();
 		this.fetchAbort = new AbortController();
 		const signal = this.fetchAbort.signal;
 
 		if (!settings.animatedArtwork) return true;
-		// Only confirm a tile exists; hosting happens after the fetch resolves so
-		// the outgoing video keeps its mount (and keeps playing) until then.
+		// Only check a tile exists; host after the fetch so the old video keeps playing.
 		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR)) return false;
 
 		const artwork = await fetchAnimatedArtwork(title, artist, album, signal);
@@ -138,15 +136,13 @@ export class AnimatedArtworkLayer {
 		if (!this.tileAlive()) return false;
 
 		if (!artwork) {
-			// A definitive miss — no point retrying when the view remounts.
 			trace.log(`AM Artwork: no animated art for "${title}"`);
 			this.detach(false);
-			// Set after detach(), which clears the key along with the artwork.
+			// After detach(), which clears the key too.
 			this.artworkKey = key;
 			return true;
 		}
-		// Same stream as what is already on screen (e.g. a compilation whose
-		// tracks resolve to one album): adopt the key and leave the video be.
+		// Same stream already on screen: adopt the key, leave the video be.
 		const unchanged =
 			this.artwork?.url === artwork.url &&
 			this.artwork?.url_tall === artwork.url_tall &&
@@ -218,20 +214,24 @@ export class AnimatedArtworkLayer {
 		this.video = video;
 		this.syncGeometry();
 
-		// MSE first: Chromium answers "maybe" to canPlayType for HLS but then fails
-		// the native demuxer on the playlist itself (DEMUXER_ERROR_COULD_NOT_PARSE),
-		// so native playback is only a fallback for engines without MSE.
+		// MSE first: Chromium says "maybe" to canPlayType for HLS then fails to
+		// demux the playlist, so native is only a fallback for engines without MSE.
 		if (typeof Hls === "function" && Hls.isSupported()) {
 			const hls = new Hls({
 				autoStartLoad: true,
-				// The tile is ~516 CSS px; without this, ABR happily picks Apple's
-				// 2160x2160 ladder rung (91MB for a 34s loop, vs 6MB at 768x768)
-				// and decodes 4x more pixels than the display can show.
 				capLevelToPlayerSize: true,
+				// H.264 ladder; the artwork has no use for 10-bit HEVC.
+				videoPreference: { videoCodec: "avc1", allowedVideoRanges: ["SDR"] },
+				maxDevicePixelRatio: ART_MAX_DPR,
 			});
 			this.hls = hls;
 			hls.loadSource(src);
 			hls.attachMedia(video);
+			hls.on(Hls.Events.LEVEL_SWITCHED, () => {
+				const fps = hls.levels[hls.currentLevel]?.frameRate;
+				if (fps && fps > 0) this.nativeFps = fps;
+				this.applyRate();
+			});
 			hls.on(Hls.Events.ERROR, (_evt, data) => {
 				if (!data.fatal) return;
 				this.fail(
@@ -246,6 +246,7 @@ export class AnimatedArtworkLayer {
 			return;
 		}
 		video.classList.add("rl-animated-art-visible");
+		this.applyRate();
 		this.ensurePlaying();
 	}
 
@@ -263,7 +264,6 @@ export class AnimatedArtworkLayer {
 		this.detach(false);
 	};
 
-	/** Respect settings + panel visibility when toggling play/pause. */
 	ensurePlaying(): void {
 		if (
 			this.artwork &&
@@ -279,20 +279,18 @@ export class AnimatedArtworkLayer {
 		}
 	}
 
-	/** Set whether the Now Playing view is currently visible on screen. */
 	setNowPlayingVisible(visible: boolean): void {
-		// Called from the 200ms activity tick: bail unless the state actually flipped.
+		// Called from the 200ms tick, so bail unless it actually flipped.
 		if (visible === this.nowPlayingVisible) return;
 		this.nowPlayingVisible = visible;
-		// Re-show has to resume explicitly: the view is hidden by CSS rather than
-		// unmounted, so the tile observer never fires and nothing else would restart it.
+		// Must resume explicitly; nothing else restarts a paused video.
 		this.ensurePlaying();
 	}
 
-	/** Keep the video mounted but re-evaluate play state (settings / visibility). */
 	refresh(): void {
 		if (!this.liveSrc) return;
 		if (settings.animatedArtwork) {
+			this.applyRate();
 			if (this.video) this.ensurePlaying();
 			else this.mountVideo(true);
 		} else {
@@ -312,7 +310,6 @@ export class AnimatedArtworkLayer {
 		}
 	}
 
-	/** Full teardown, including tile references. */
 	dispose(): void {
 		this.loadToken++;
 		this.fetchAbort?.abort();
@@ -321,7 +318,6 @@ export class AnimatedArtworkLayer {
 		this.resizeObs = null;
 		if (this.resizeRaf !== 0) cancelAnimationFrame(this.resizeRaf);
 		this.resizeRaf = 0;
-		// detach(true) keeps nothing on disk, but we are disposing
 		this.detach(false);
 		this.releaseMount();
 		this.tile = null;

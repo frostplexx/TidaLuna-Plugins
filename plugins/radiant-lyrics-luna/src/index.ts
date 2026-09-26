@@ -732,11 +732,10 @@ const setLayerRunning = (
 	if (now - pauseHiddenSince[slot] >= PAUSE_GRACE_MS) layer.setPaused(true);
 };
 
-// Cached so the 200ms activity tick does not re-run a document-wide
-// attribute-substring query; invalidated as soon as the node detaches.
+// Cached so the 200ms tick skips a document-wide query.
 let cachedNowPlayingPanel: HTMLElement | null = null;
 
-// Is the Now Playing view actually on screen? (visibility, not just mounted)
+// On screen, not just mounted.
 const artPanelVisible = (panel: HTMLElement): boolean => {
 	if (typeof panel.checkVisibility === "function") {
 		return panel.checkVisibility({ checkVisibilityCSS: true });
@@ -777,8 +776,7 @@ const syncBackdropActivity = (): void => {
 		now,
 	);
 
-	// Animated artwork only runs while the Now Playing view is visible.
-	// Guarded: without a layer there is nothing to tell, and this runs 5x/second.
+	// Only runs while the Now Playing view is visible. Guarded: this ticks 5x/second.
 	if (animatedArtworkLayer) {
 		if (!cachedNowPlayingPanel?.isConnected) {
 			cachedNowPlayingPanel = document.querySelector(
@@ -1048,15 +1046,9 @@ const updateRadiantLyricsBackdrop = function (): void {
 // MARKER: Animated Artwork (Apple Music live artwork on the artwork tile)
 let animatedArtworkLayer: AnimatedArtworkLayer | null = null;
 let lastArtworkKey: string | null = null;
-// The tile element we have already reacted to, so the DOM observer stays O(1).
 let lastArtworkTile: Element | null = null;
 
-/**
- * Identity of a track's animated artwork. Apple Music animated art is an *album*
- * asset, so every track on one album shares it: keying by album means skipping
- * within an album neither refetches nor restarts the video. Falls back to the
- * title only when the album is unknown, which is the finest identity available.
- */
+/** Animated art is an album asset, so key by album and skips within one are free. */
 const artworkKey = (t: TrackInfo): string =>
 	t.album && t.album.trim() !== ""
 		? `${t.artist}\u0000${t.album.trim()}`
@@ -1077,7 +1069,7 @@ const updateAnimatedArtwork = async (
 	if (!animatedArtworkLayer) animatedArtworkLayer = new AnimatedArtworkLayer();
 	target ??= await getTrackInfo();
 	if (!target) return;
-	// Re-check after the await: another caller may have claimed this track already.
+	// Re-check after the await; another caller may have claimed this already.
 	if (!settings.animatedArtwork || !animatedArtworkLayer) return;
 	const key = artworkKey(target);
 	if (key === lastArtworkKey) {
@@ -1092,12 +1084,13 @@ const updateAnimatedArtwork = async (
 		target.artist,
 		target.album,
 	);
-	// No artwork tile was on screen (lyrics view not open yet) — clear the key so
-	// the tile observer can retry instead of treating this track as handled.
+	// No tile on screen yet; clear the key so the tile observer retries.
 	if (!done && lastArtworkKey === key) lastArtworkKey = null;
 };
 
 (window as any).updateAnimatedArtwork = updateAnimatedArtwork;
+(window as any).updateAnimatedArtworkRate = (): void =>
+	animatedArtworkLayer?.refresh();
 
 // Make these functions available globally so Settings can call them
 (window as any).updateRadiantLyricsStyles = updateRadiantLyricsStyles;
@@ -1133,9 +1126,7 @@ updateRadiantLyricsTextGlow();
 // Init global background
 updateCoverArtBackground(1);
 
-// Init animated artwork (handles already-playing track on startup).
-// Deferred: getTrackInfo() is a `const` declared further down this module, so
-// calling it during module evaluation would hit the uninitialised binding.
+// Deferred: getTrackInfo() is declared further down and would be uninitialised.
 queueMicrotask(() => void updateAnimatedArtwork());
 
 // Cleanups
@@ -1478,14 +1469,10 @@ function setupLyricsMenuObserver(): void {
 		}
 	});
 
-	// Animated artwork: the tile only exists once the Now Playing view is open,
-	// so the initial load has to run from here as well as on track change.
-	// `observe` is a document-wide childList MutationObserver, so this fires on
-	// virtually every DOM change. Bail synchronously unless the tile is genuinely
-	// new — anything heavier (or anything that mutates) would feed itself.
+	// The tile only exists once the view is open, so load from here too. This fires
+	// on nearly every DOM change, so bail synchronously unless the tile is new.
 	observe<HTMLElement>(unloads, ART_TILE_SELECTOR, (tile) => {
-		// Identity check only: cheap, and it stops us reacting to our own <video>
-		// insertion, whose mutation target (the tile's parent) re-matches the tile.
+		// Identity only; also stops us reacting to our own <video> insertion.
 		if (tile === lastArtworkTile) return;
 		lastArtworkTile = tile;
 		void updateAnimatedArtwork(undefined, true);
