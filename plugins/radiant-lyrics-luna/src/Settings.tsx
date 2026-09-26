@@ -8,6 +8,7 @@ declare global {
 		updateRadiantLyricsTextGlow?: () => void;
 		updateRadiantLyricsPlayerBarTint?: () => void;
 		updateRadiantLyricsBackdrop?: () => void;
+		updateAnimatedArtwork?: (target?: unknown) => void;
 		updateQualityProgressColor?: () => void;
 		updateIntegratedSeekBar?: () => void;
 		updateLyricsStyle?: () => void;
@@ -48,6 +49,7 @@ export const settings = await ReactiveStore.getPluginStorage("RadiantLyrics", {
 	playerBarTintCustomColors: [] as string[],
 	// Master switch
 	backdropEnabled: true,
+	animatedArtwork: true,
 	backdropStyle: 0,
 	backdropPlaybackReactive: true,
 	CoverEverywhere: true,
@@ -81,6 +83,9 @@ export const Settings = () => {
 	);
 	const [backdropEnabled, setBackdropEnabled] = React.useState(
 		settings.backdropEnabled,
+	);
+	const [animatedArtwork, setAnimatedArtwork] = React.useState(
+		settings.animatedArtwork,
 	);
 	const [backdropStyle, setBackdropStyle] = React.useState(
 		settings.backdropStyle,
@@ -913,6 +918,16 @@ export const Settings = () => {
 					settings.CoverEverywhere = checked;
 					setCoverEverywhere(checked);
 					refreshBackdrop();
+				}}
+			/>
+			<AnySwitch
+				title="Animated Artwork"
+				desc="Show Apple Music animated artwork over the artwork tile in the Now Playing view"
+				checked={animatedArtwork}
+				onChange={(_: unknown, checked: boolean) => {
+					settings.animatedArtwork = checked;
+					setAnimatedArtwork(checked);
+					window.updateAnimatedArtwork?.();
 				}}
 			/>
 			{backdropEnabled && (
