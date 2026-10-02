@@ -6,7 +6,7 @@ import { Tracer } from "@luna/core";
 // Light build: no alt-audio/subtitles/EME needed here. Types in hls-light.d.ts.
 import Hls from "hls.js/light";
 
-import { fetchAnimatedArtwork } from "./api";
+import { artworkTitleKey, fetchAnimatedArtwork } from "./api";
 import { settings } from "./Settings";
 
 const { trace } = Tracer("[Radiant Lyrics]");
@@ -27,7 +27,10 @@ export class AnimatedArtworkLayer {
 	private resizeObs: ResizeObserver | null = null;
 	private resizeRaf = 0;
 	private artwork: { url: string; url_tall: string } | null = null;
-	/** See artworkKey() in index.ts. */
+	/**
+	 * Scope key of the displayed artwork (see fetchAnimatedArtwork): the album
+	 * key only when the answer was matched by album, else the title key.
+	 */
 	private artworkKey: string | null = null;
 	private liveSrc: string | null = null;
 	private loadToken = 0;
@@ -109,52 +112,61 @@ export class AnimatedArtworkLayer {
 
 	/**
 	 * Mount the artwork for `key`, leaving any playing video alone until a
-	 * replacement resolves. False means no tile was on screen, so retry later.
+	 * replacement resolves. `done: false` means no tile was on screen, so
+	 * retry later. Returns the scope `key` the result is valid under (see
+	 * fetchAnimatedArtwork), which may be narrower than the request key.
 	 */
 	async load(
 		key: string,
 		title: string,
 		artist: string,
 		album: string | undefined,
-	): Promise<boolean> {
-		// Already showing this album's artwork — keep playing, touch nothing.
-		if (key === this.artworkKey && this.artwork && this.video?.isConnected) {
+	): Promise<{ done: boolean; key: string }> {
+		// Already showing artwork that covers this track (album-matched, or the
+		// same track again) — keep playing, touch nothing.
+		if (
+			(key === this.artworkKey ||
+				artworkTitleKey(artist, title) === this.artworkKey) &&
+			this.artwork &&
+			this.video?.isConnected
+		) {
 			this.ensurePlaying();
-			return true;
+			return { done: true, key: this.artworkKey };
 		}
 		const token = ++this.loadToken;
 		this.fetchAbort?.abort();
 		this.fetchAbort = new AbortController();
 		const signal = this.fetchAbort.signal;
 
-		if (!settings.animatedArtwork) return true;
+		if (!settings.animatedArtwork) return { done: true, key };
 		// Only check a tile exists; host after the fetch so the old video keeps playing.
-		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR)) return false;
+		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR))
+			return { done: false, key };
 
-		const artwork = await fetchAnimatedArtwork(title, artist, album, signal);
-		if (token !== this.loadToken) return true;
-		if (!this.tileAlive()) return false;
+		const lookup = await fetchAnimatedArtwork(title, artist, album, signal);
+		if (token !== this.loadToken) return { done: true, key: lookup.key };
+		if (!this.tileAlive()) return { done: false, key: lookup.key };
 
-		if (!artwork) {
+		if (!lookup.artwork) {
 			trace.log(`AM Artwork: no animated art for "${title}"`);
 			this.detach(false);
 			// After detach(), which clears the key too.
-			this.artworkKey = key;
-			return true;
+			this.artworkKey = lookup.key;
+			return { done: true, key: lookup.key };
 		}
 		// Same stream already on screen: adopt the key, leave the video be.
 		const unchanged =
-			this.artwork?.url === artwork.url &&
-			this.artwork?.url_tall === artwork.url_tall &&
+			this.artwork?.url === lookup.artwork.url &&
+			this.artwork?.url_tall === lookup.artwork.url_tall &&
 			this.video?.isConnected === true;
-		this.artwork = artwork;
-		this.artworkKey = key;
+		this.artwork = lookup.artwork;
+		this.artworkKey = lookup.key;
 		if (unchanged) {
 			this.ensurePlaying();
-			return true;
+			return { done: true, key: lookup.key };
 		}
 		this.mountVideo(false);
-		return true;
+		return { done: true, key: lookup.key };
 	}
 
 	/** Re-bind to the artwork tile after the Now Playing view (re)mounted. */
