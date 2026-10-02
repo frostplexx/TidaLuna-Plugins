@@ -207,6 +207,21 @@ export interface AnimatedArtwork {
 	url_tall: string;
 }
 
+export interface ArtworkLookup {
+	artwork: AnimatedArtwork | null;
+	/**
+	 * Scope the result is valid for, as a dedupe key: the album key only when
+	 * the answer was matched by album. A title-only fallback (or a miss) is
+	 * specific to this track, so its key scopes to the title — the album's
+	 * other tracks must not inherit it.
+	 */
+	key: string;
+}
+
+/** Title-scoped artwork key: a result only valid for this exact track. */
+export const artworkTitleKey = (artist: string, title: string): string =>
+	`${artist}\u0000\u0000${title}`;
+
 function artworkSearchUrl(
 	title: string,
 	artist: string,
@@ -219,6 +234,8 @@ function artworkSearchUrl(
 }
 
 // Cached including misses; most tracks have none and the answer never changes.
+// Only album-matched results go under the album key — a title-only fallback
+// must not stand in for the album's other tracks (see ArtworkLookup).
 const animatedArtworkCache = new Map<string, AnimatedArtwork | null>();
 const ARTWORK_CACHE_MAX = 200;
 
@@ -227,14 +244,16 @@ export async function fetchAnimatedArtwork(
 	artist: string,
 	album?: string,
 	signal?: AbortSignal,
-): Promise<AnimatedArtwork | null> {
-	// Keyed by album, matching artworkKey() in index.ts.
-	const cacheKey =
-		album && album.trim() !== ""
-			? `${artist}\u0000${album.trim()}`
-			: `${artist}\u0000\u0000${title}`;
+): Promise<ArtworkLookup> {
+	const albumName = album?.trim() || "";
+	const albumPresent = albumName !== "";
+	// Album key, matching artworkKey() in index.ts; without an album the
+	// answer is only ever matched by title, so key by title directly.
+	const cacheKey = albumPresent
+		? `${artist}\u0000${albumName}`
+		: artworkTitleKey(artist, title);
 	if (animatedArtworkCache.has(cacheKey)) {
-		return animatedArtworkCache.get(cacheKey) ?? null;
+		return { artwork: animatedArtworkCache.get(cacheKey) ?? null, key: cacheKey };
 	}
 
 	const controller = new AbortController();
@@ -286,14 +305,17 @@ export async function fetchAnimatedArtwork(
 		const withAlbum = await tryFetch(
 			artworkSearchUrl(title, artist, album),
 		);
-		if (withAlbum) return remember(withAlbum);
-		if (album && album.trim() !== "") {
-			const withoutAlbum = await tryFetch(
-				artworkSearchUrl(title, artist),
-			);
-			if (withoutAlbum) return remember(withoutAlbum);
+		// Album-matched: cacheable, and its scope is the whole album.
+		if (withAlbum) return { artwork: remember(withAlbum), key: cacheKey };
+		if (albumPresent) {
+			// Album lookup missed: the title-only answer — hit or miss — is
+			// matched by title, so never cache it under the album key (that
+			// would poison the album's other tracks) and scope it to the title.
+			const artwork = await tryFetch(artworkSearchUrl(title, artist));
+			return { artwork, key: artworkTitleKey(artist, title) };
 		}
-		return remember(null);
+		// No album: the title key is already track-specific.
+		return { artwork: remember(null), key: cacheKey };
 	} finally {
 		clearTimeout(timeout);
 		signal?.removeEventListener("abort", onAbort);

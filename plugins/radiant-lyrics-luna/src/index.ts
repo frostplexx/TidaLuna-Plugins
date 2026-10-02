@@ -15,6 +15,7 @@ import {
 	type LyricsApiResponse,
 	type WordLine,
 	type WordTiming,
+	artworkTitleKey,
 	fetchLyrics as fetchLyricsApi,
 	flushLyrics as flushLyricsApi,
 	romanizeLyrics as romanizeLyricsApi,
@@ -1048,7 +1049,12 @@ let animatedArtworkLayer: AnimatedArtworkLayer | null = null;
 let lastArtworkKey: string | null = null;
 let lastArtworkTile: Element | null = null;
 
-/** Animated art is an album asset, so key by album and skips within one are free. */
+/**
+ * Request key for an animated-artwork lookup: album-scoped when an album is
+ * present (skips within one are free). A result may still be scoped tighter —
+ * see fetchAnimatedArtwork() — so skipping compares lastArtworkKey, the
+ * effective scope, not this request key.
+ */
 const artworkKey = (t: TrackInfo): string =>
 	t.album && t.album.trim() !== ""
 		? `${t.artist}\u0000${t.album.trim()}`
@@ -1072,20 +1078,28 @@ const updateAnimatedArtwork = async (
 	// Re-check after the await; another caller may have claimed this already.
 	if (!settings.animatedArtwork || !animatedArtworkLayer) return;
 	const key = artworkKey(target);
-	if (key === lastArtworkKey) {
+	// Free skip: the shown artwork's scope covers this track — it was matched
+	// by album (album key), or it is the same track again (title key).
+	if (
+		key === lastArtworkKey ||
+		artworkTitleKey(target.artist, target.title) === lastArtworkKey
+	) {
 		// Same artwork, but the view may have remounted underneath us.
 		if (rehost) animatedArtworkLayer.reattach();
 		return;
 	}
 	lastArtworkKey = key;
-	const done = await animatedArtworkLayer.load(
+	const res = await animatedArtworkLayer.load(
 		key,
 		target.title,
 		target.artist,
 		target.album,
 	);
+	// Adopt the effective scope — a title-matched result (or a miss) must not
+	// stand in for the album's other tracks — unless a newer trigger claimed.
+	if (lastArtworkKey === key) lastArtworkKey = res.key;
 	// No tile on screen yet; clear the key so the tile observer retries.
-	if (!done && lastArtworkKey === key) lastArtworkKey = null;
+	if (!res.done && lastArtworkKey === res.key) lastArtworkKey = null;
 };
 
 (window as any).updateAnimatedArtwork = updateAnimatedArtwork;
