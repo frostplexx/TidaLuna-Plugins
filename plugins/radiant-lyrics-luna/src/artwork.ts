@@ -215,7 +215,10 @@ export class AnimatedArtworkLayer {
 			this.ensurePlaying();
 			return;
 		}
-		this.video?.remove();
+		// Fade whatever is on screen out instead of hard-cutting it: the new
+		// video mounts at opacity 0 and crossfades in over it (and the tile's
+		// static cover underneath).
+		if (this.video) this.retireVideo(this.video);
 		this.hls?.destroy();
 		this.hls = null;
 		this.video = null;
@@ -348,19 +351,26 @@ export class AnimatedArtworkLayer {
 			this.artworkKey = null;
 		}
 		if (!video) return;
-		if (fade && video.parentNode) {
-			// Fade out over the tile's static cover first, then drop the
-			// element once the 0.3s opacity transition has finished. The
-			// layer forgets the element immediately, so a replacement video
-			// can mount underneath while this one fades.
-			video.classList.remove("rl-animated-art-visible");
-			setTimeout(() => {
-				video.pause();
-				video.remove();
-			}, ART_FADE_MS);
-		} else {
+		if (fade) this.retireVideo(video);
+		else video.remove();
+	}
+
+	/**
+	 * Fade a video element out over the tile's static cover, then drop it
+	 * once the 0.3s opacity transition has finished. Purely element-level:
+	 * layer state must be updated by the caller, so a replacement video can
+	 * mount underneath while this one fades.
+	 */
+	private retireVideo(video: HTMLVideoElement): void {
+		if (!video.parentNode) {
 			video.remove();
+			return;
 		}
+		video.classList.remove("rl-animated-art-visible");
+		setTimeout(() => {
+			video.pause();
+			video.remove();
+		}, ART_FADE_MS);
 	}
 
 	dispose(): void {
