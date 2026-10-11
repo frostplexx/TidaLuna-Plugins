@@ -112,9 +112,12 @@ export class AnimatedArtworkLayer {
 	}
 
 	/**
-	 * Mount the artwork for `key`, leaving any playing video alone until a
-	 * replacement resolves. `done: false` means no tile was on screen, so
-	 * retry later. Returns the scope `key` the result is valid under (see
+	 * Mount the artwork for `key`. Artwork already on screen that covers
+	 * `key` (album-matched, or the same track again) keeps playing; anything
+	 * else is dropped immediately — it belongs to the previous track — and
+	 * the lookup runs with TIDAL's static cover showing, remounting only on
+	 * a hit. `done: false` means no tile was on screen, so retry later.
+	 * Returns the scope `key` the result is valid under (see
 	 * fetchAnimatedArtwork), which may be narrower than the request key.
 	 */
 	async load(
@@ -141,9 +144,14 @@ export class AnimatedArtworkLayer {
 		const signal = this.fetchAbort.signal;
 
 		if (!settings.animatedArtwork) return { done: true, key };
-		// Only check a tile exists; host after the fetch so the old video keeps playing.
+		// Only check a tile exists; hosting waits for the lookup.
 		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR))
 			return { done: false, key };
+
+		// The shown artwork doesn't cover this track: drop the stale video
+		// right away instead of playing the previous track's art over the
+		// (already swapped-in) static cover while the lookup runs.
+		this.detach(false);
 
 		const lookup = await fetchAnimatedArtwork(
 			title,
