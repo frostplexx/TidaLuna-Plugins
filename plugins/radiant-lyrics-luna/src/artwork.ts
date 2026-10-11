@@ -1,6 +1,5 @@
 // MARKER: Animated Artwork (live artwork in the lyrics view)
-//   AnimatedArtworkLayer resolves the art for the playing track (bound to its
-//   track ID); each ArtworkSurface renders it over one of TIDAL's covers.
+//   Layer finds the art, surfaces draw it on covers.
 //   Orchestration (track change, visibility, settings) lives in index.ts.
 
 import { Tracer } from "@luna/core";
@@ -17,27 +16,23 @@ import { settings } from "./Settings";
 const { trace } = Tracer("[Radiant Lyrics]");
 
 export const ART_TILE_SELECTOR = '[data-test="now-playing-artwork"]';
-/** Player-bar thumbnail (same element the stock backdrop samples). */
+// Player bar thumbnail
 export const MINI_ART_SELECTOR =
 	'[data-test="footer-player"] [data-test="current-media-imagery"] img';
-/** Elements that cannot render child nodes, so the video must go beside them. */
+// Can't hold children, so the video goes beside them
 const REPLACED_TAGS = new Set(["IMG", "PICTURE", "VIDEO", "CANVAS", "SVG"]);
-// Keeps ABR off the 2160x2160 rung (91MB a loop). Bandwidth only, not CPU.
+// Skip the 2160px rung (91MB a loop)
 const ART_MAX_DPR = 1;
 const ART_NATIVE_FPS = 25;
-/** Matches the .rl-animated-art opacity transition. */
+// Same as the CSS fade
 const ART_FADE_MS = 300;
 
-/**
- * One <video> over one TIDAL cover. The video (and its buffered HLS stream)
- * outlives the cover element: when TIDAL remounts the cover, the same node is
- * moved into the new one, so reopening a view never drops to the static art.
- */
+// One video per cover, moved (not rebuilt) on remount
 class ArtworkSurface {
 	private video: HTMLVideoElement | null = null;
 	private hls: Hls | null = null;
 	private tile: HTMLElement | null = null;
-	/** The tile, or its parent when the tile is a replaced element. */
+	// The tile, or its parent for replaced elements
 	private mount: HTMLElement | null = null;
 	/** True when the mount's inline position is ours to revert. */
 	private mountPositioned = false;
@@ -45,7 +40,7 @@ class ArtworkSurface {
 	private resizeRaf = 0;
 	private artwork: AnimatedArtwork | null = null;
 	private liveSrc: string | null = null;
-	/** A stream that errored; not retried until the artwork changes. */
+	// Errored stream, skipped until the art changes
 	private failedSrc: string | null = null;
 	private fadeTimer = 0;
 	private visible = true;
@@ -53,11 +48,11 @@ class ArtworkSurface {
 
 	constructor(
 		private readonly selector: string,
-		/** Use the portrait stream when the cover is taller than wide. */
+		// Use the tall stream on portrait covers
 		private readonly allowTall: boolean,
 	) {}
 
-	/** Show `artwork`, or fade the current video out when null. */
+	// Show art, or fade out on null
 	show(artwork: AnimatedArtwork | null): void {
 		if (artwork?.url !== this.artwork?.url) this.failedSrc = null;
 		this.artwork = artwork;
@@ -65,10 +60,7 @@ class ArtworkSurface {
 		else this.fadeOut();
 	}
 
-	/**
-	 * Attach to the cover on screen. Cheap enough for the DOM observer: a live
-	 * video is moved, never rebuilt, unless the stream itself changed.
-	 */
+	// Attach to the cover on screen (moves, never rebuilds)
 	bind(): void {
 		if (!this.artwork || !settings.animatedArtwork) return;
 		const tile = document.querySelector<HTMLElement>(this.selector);
@@ -81,7 +73,7 @@ class ArtworkSurface {
 			this.build(src);
 			return;
 		}
-		// Same stream came back mid fade-out: keep it rather than rebuild.
+		// Came back mid fade, keep it
 		if (this.fadeTimer !== 0) {
 			clearTimeout(this.fadeTimer);
 			this.fadeTimer = 0;
@@ -89,21 +81,21 @@ class ArtworkSurface {
 				this.video.classList.add("rl-animated-art-visible");
 			}
 		}
-		// Appending moves the node; its MediaSource and buffer come along.
+		// Moving keeps the buffered stream
 		if (this.video.parentNode !== this.mount) this.mount.appendChild(this.video);
 		this.syncGeometry();
 		this.ensurePlaying();
 	}
 
 	setVisible(visible: boolean): void {
-		// Called from the 200ms tick, so bail unless it actually flipped.
+		// 200ms tick, bail unless it flipped
 		if (visible === this.visible) return;
 		this.visible = visible;
 		// Must resume explicitly; nothing else restarts a paused video.
 		this.ensurePlaying();
 	}
 
-	/** On-screen check for covers with no panel of their own to test. */
+	// Is the cover on screen
 	tileVisible(): boolean {
 		const tile = this.tile;
 		if (!tile?.isConnected) return false;
@@ -158,7 +150,7 @@ class ArtworkSurface {
 		video.crossOrigin = "anonymous";
 		video.tabIndex = -1;
 		video.setAttribute("aria-hidden", "true");
-		// Fade in on the first decoded frame, so the static cover shows until then.
+		// Fade in once the first frame is ready
 		video.addEventListener(
 			"loadeddata",
 			() => video.classList.add("rl-animated-art-visible"),
@@ -178,8 +170,7 @@ class ArtworkSurface {
 		this.video = video;
 		this.syncGeometry();
 
-		// hls.js over MSE only: Chromium claims native HLS support but fails to
-		// demux the playlist, so there is no native fallback.
+		// hls.js only, native HLS is broken in Chromium
 		if (typeof Hls === "function" && Hls.isSupported()) {
 			const hls = new Hls({
 				autoStartLoad: true,
@@ -212,7 +203,7 @@ class ArtworkSurface {
 		this.ensurePlaying();
 	}
 
-	// CPU tracks presented fps and nothing else, so this is the only perf knob.
+	// FPS is the only CPU knob
 	private applyRate(): void {
 		if (!this.video) return;
 		const target = Number(settings.animatedArtworkFps) || ART_NATIVE_FPS;
@@ -220,7 +211,7 @@ class ArtworkSurface {
 		if (this.video.playbackRate !== rate) this.video.playbackRate = rate;
 	}
 
-	/** Fade the video out, then drop it, unless bind() claims it back first. */
+	// Fade out, then drop the video
 	private fadeOut(): void {
 		const video = this.video;
 		if (!video || this.fadeTimer !== 0) return;
@@ -261,8 +252,7 @@ class ArtworkSurface {
 
 	private host(tile: HTMLElement): void {
 		this.tile = tile;
-		// Covers are <img>s; a replaced element silently drops children, so
-		// host the video in the parent and lay it over the tile.
+		// Covers are <img>s, so host the video in the parent
 		const replaced = REPLACED_TAGS.has(tile.tagName);
 		const mount = replaced ? tile.parentElement : tile;
 		if (mount !== this.mount) this.releaseMount();
@@ -280,7 +270,7 @@ class ArtworkSurface {
 		this.mount = null;
 	}
 
-	/** Lay the video over the tile when it is not a direct child of it. */
+	// Lay the video over the tile
 	private syncGeometry(): void {
 		const { video, tile, mount } = this;
 		if (!video || !tile || !mount) return;
@@ -321,31 +311,20 @@ export interface ArtworkTrack {
 	isrc?: string;
 }
 
-/**
- * Resolves the animated artwork for the playing track and feeds it to every
- * surface. Bound to the track ID: one track's art never plays over another's
- * cover, except across an album whose art was album-matched (TIDAL shows the
- * same static cover there too).
- */
+// Finds art for the playing track, feeds every cover
 export class AnimatedArtworkLayer {
 	private readonly nowPlaying = new ArtworkSurface(ART_TILE_SELECTOR, true);
 	private readonly mini = new ArtworkSurface(MINI_ART_SELECTOR, false);
 	private readonly surfaces = [this.nowPlaying, this.mini];
 	private trackId: string | null = null;
-	/**
-	 * Scope key of the current answer (see fetchAnimatedArtwork): the album
-	 * key only when it was matched by album, else the title key.
-	 */
+	// Album key if album matched, else title key
 	private artworkKey: string | null = null;
 	private loadToken = 0;
 	private fetchAbort: AbortController | null = null;
 
-	/**
-	 * Called from the shared track-change listener. `albumKey` is the
-	 * album-scoped request key for this track (artworkKey() in index.ts).
-	 */
+	// Called on track change
 	async setTrack(track: ArtworkTrack, albumKey: string): Promise<void> {
-		// Same track again (initial fire + transition, repeat-one): keep playing.
+		// Same track, keep playing
 		if (track.trackId === this.trackId) {
 			this.rebind();
 			return;
@@ -355,7 +334,7 @@ export class AnimatedArtworkLayer {
 		this.fetchAbort?.abort();
 		this.fetchAbort = null;
 
-		// Album-matched art covers the album's other tracks: nothing to fetch.
+		// Same album art, nothing to fetch
 		if (
 			this.artworkKey !== null &&
 			(albumKey === this.artworkKey ||
@@ -365,8 +344,7 @@ export class AnimatedArtworkLayer {
 			return;
 		}
 
-		// Different art: drop the old track's video now rather than letting it
-		// play over the new cover for the length of the lookup.
+		// New art, drop the old video now
 		this.apply(null, null);
 
 		const abort = new AbortController();
@@ -386,19 +364,19 @@ export class AnimatedArtworkLayer {
 		this.apply(lookup.artwork, lookup.key);
 	}
 
-	/** Re-bind to the covers after TIDAL (re)mounted one. */
+	// Rebind after TIDAL remounts a cover
 	rebind(): void {
 		for (const surface of this.surfaces) surface.bind();
 	}
 
-	/** Called from the 200ms tick. */
+	// Called from the 200ms tick
 	syncVisibility(nowPlayingVisible: boolean): void {
 		const pageVisible = !document.hidden;
 		this.nowPlaying.setVisible(pageVisible && nowPlayingVisible);
 		this.mini.setVisible(pageVisible && this.mini.tileVisible());
 	}
 
-	/** Settings changed (fps). */
+	// FPS setting changed
 	refresh(): void {
 		for (const surface of this.surfaces) surface.refresh();
 	}

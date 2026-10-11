@@ -210,7 +210,7 @@ export const Settings = () => {
 		window.updateRadiantLyricsBackdrop?.();
 	};
 
-	// Derive props and override onChange to accept a broader first param type
+	// Loosen onChange's first param type
 	type BaseSwitchProps = React.ComponentProps<typeof LunaSwitchSetting>;
 	type AnySwitchProps = Omit<BaseSwitchProps, "onChange"> & {
 		onChange: (_: unknown, checked: boolean) => void;

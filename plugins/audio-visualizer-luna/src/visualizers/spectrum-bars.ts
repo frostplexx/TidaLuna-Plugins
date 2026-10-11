@@ -36,7 +36,7 @@ void main() {
 	float barMask = smoothstep(0.0, u_gap, cellPos)
 	              * smoothstep(0.0, u_gap, 1.0 - cellPos);
 
-	// Hard cut at bottom, soft feather only at the top edge
+	// Hard bottom, feathered top
 	float feather = 1.5 / u_resolution.y;
 	float heightMask = 1.0 - smoothstep(amp - feather, amp + feather, uv.y);
 

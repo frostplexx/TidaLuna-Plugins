@@ -1,5 +1,4 @@
-// hls.js ships types for its main entry only. The light build is the same public
-// API with alt-audio, subtitles and EME stripped, so point it at those types.
+// hls.js only types its main entry, reuse them here
 declare module "hls.js/light" {
 	export * from "hls.js";
 	export { default } from "hls.js";

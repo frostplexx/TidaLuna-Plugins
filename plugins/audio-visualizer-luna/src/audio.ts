@@ -33,10 +33,7 @@ export interface AudioData {
 	binCount: number;
 }
 
-// Connection states
-// disconnected - no audio source
-// pending - wired but audio isn't detected (track muted / loading)
-// live - audio is detected
+// Connection states: disconnected, pending (no audio yet), live
 export type ConnectionState = "disconnected" | "pending" | "live";
 let state: ConnectionState = "disconnected";
 let onStateChange: ((state: ConnectionState) => void) | null = null;
@@ -202,13 +199,13 @@ const captureFromEl = (el: HTMLMediaElement): boolean => {
 		track.removeEventListener("ended", onEnded);
 	};
 
-	// Captured tracks start muted until samples flow; wait for "unmute" instead of guessing.
+	// Captured tracks start muted, wait for unmute
 	loggedCaptureFailure = false;
 	setState(track.muted ? "pending" : "live");
 	return true;
 };
 
-// An element is worth capturing from when it's actually advancing audio.
+// Only capture elements that are playing
 const isPlayingAudio = (el: HTMLMediaElement): boolean => !el.paused && !el.ended && el.readyState >= 2;
 
 

@@ -181,7 +181,7 @@ const onClickHooked = (event: MouseEvent): boolean | undefined => {
 	return false;
 };
 
-// Add event listener with capture phase to intercept events before they reach other handlers
+// Capture phase, runs before other handlers
 
 document.addEventListener("click", onClickHooked, true);
 

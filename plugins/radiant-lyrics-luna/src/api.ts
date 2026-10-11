@@ -109,9 +109,9 @@ export interface WordLyricsResponse {
 		songParts?: Array<{ name: string; time: number; duration: number }>;
 	};
 	_cached?: boolean;
-	/** true when timings came from the hosted Radiant AI model (?synthesize=true) */
+	// Timings came from Radiant AI
 	_synthesized?: boolean;
-	/** original line-level data, kept so AI timings can be toggled off without a refetch */
+	// Original lines, so AI can be turned off without refetch
 	lines?: ApiLine[];
 }
 
@@ -209,24 +209,15 @@ export interface AnimatedArtwork {
 
 export interface ArtworkLookup {
 	artwork: AnimatedArtwork | null;
-	/**
-	 * Scope the result is valid for, as a dedupe key: the album key only when
-	 * the answer was matched by album (by name or via the track's ISRC, which
-	 * the server resolves to the same album). A title-only fallback (or a
-	 * miss) is specific to this track, so its key scopes to the title — the
-	 * album's other tracks must not inherit it.
-	 */
+	// Album key if album matched, else title key
 	key: string;
 }
 
-/** Title-scoped artwork key: a result only valid for this exact track. */
+// Key for this exact track only
 export const artworkTitleKey = (artist: string, title: string): string =>
 	`${artist}\u0000\u0000${title}`;
 
-/**
- * ISRC lookup: the server resolves the exact song by ISRC and answers
- * from its album, immune to title/album name mismatches.
- */
+// ISRC lookup, immune to name mismatches
 const artworkIsrcUrl = (isrc: string): string =>
 	`https://ama.trainswift.net/api/v1/artwork/search?isrc=${encodeURIComponent(isrc)}`;
 
@@ -241,10 +232,7 @@ function artworkSearchUrl(
 	return `https://ama.trainswift.net/api/v1/artwork/search?${q}`;
 }
 
-// Cached including misses; most tracks have none and the answer never changes.
-// Only album-matched results (by name or ISRC) go under the album key — a
-// title-only fallback must not stand in for the album's other tracks (see
-// ArtworkLookup).
+// Cache hits and misses, album key only for album matches
 const animatedArtworkCache = new Map<string, AnimatedArtwork | null>();
 const ARTWORK_CACHE_MAX = 200;
 
@@ -258,8 +246,7 @@ export async function fetchAnimatedArtwork(
 	const albumName = album?.trim() || "";
 	const albumPresent = albumName !== "";
 	const isrcTrimmed = isrc?.trim() || "";
-	// Album key, matching artworkKey() in index.ts; without an album the
-	// answer is only ever matched by title, so key by title directly.
+	// Album key, or title key without an album
 	const cacheKey = albumPresent
 		? `${artist}\u0000${albumName}`
 		: artworkTitleKey(artist, title);
@@ -312,10 +299,7 @@ export async function fetchAnimatedArtwork(
 	};
 
 	try {
-		// ISRC first: the exact match. A hit is resolved through the track's
-		// album, so it is album-scoped (cacheKey); a miss says nothing about
-		// the album (the ISRC may simply be unknown to the source), so fall
-		// through to the name flow without caching it.
+		// ISRC first, misses fall through uncached
 		if (isrcTrimmed) {
 			const byIsrc = await tryFetch(artworkIsrcUrl(isrcTrimmed));
 			if (byIsrc) return { artwork: remember(byIsrc), key: cacheKey };
@@ -327,9 +311,7 @@ export async function fetchAnimatedArtwork(
 		// Album-matched: cacheable, and its scope is the whole album.
 		if (withAlbum) return { artwork: remember(withAlbum), key: cacheKey };
 		if (albumPresent) {
-			// Album lookup missed: the title-only answer — hit or miss — is
-			// matched by title, so never cache it under the album key (that
-			// would poison the album's other tracks) and scope it to the title.
+			// Title-only result, scope it to this track
 			const artwork = await tryFetch(artworkSearchUrl(title, artist));
 			return { artwork, key: artworkTitleKey(artist, title) };
 		}
