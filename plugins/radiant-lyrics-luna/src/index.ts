@@ -1094,6 +1094,7 @@ const updateAnimatedArtwork = async (
 		target.title,
 		target.artist,
 		target.album,
+		target.isrc,
 	);
 	// Adopt the effective scope — a title-matched result (or a miss) must not
 	// stand in for the album's other tracks — unless a newer trigger claimed.
