@@ -49,6 +49,48 @@
 /* MARKER: Lyrics Menu CSS */
 
 /* Lyrics toggle button */
+
+/* Flush lyrics button — loading spinner while waiting for lyrics */
+.flush-lyrics-button svg.rl-spinner {
+	animation: rl-spinner-rotate 0.9s linear infinite;
+}
+
+@keyframes rl-spinner-rotate {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* Flush button tooltip (native title is unreliable) */
+.flush-lyrics-button {
+	position: relative !important;
+}
+
+.flush-lyrics-button::after {
+	content: attr(data-tip);
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	padding: 4px 8px;
+	border-radius: 4px;
+	background: rgba(0, 0, 0, 0.85);
+	color: #fff;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1.3;
+	white-space: nowrap;
+	pointer-events: none;
+	z-index: 10000;
+	opacity: 0;
+	transform: translateY(-2px);
+	transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.flush-lyrics-button:hover::after {
+	opacity: 1;
+	transform: translateY(0);
+}
+
 [data-test="toggle-lyrics"]:has(.rl-lyrics-menu-trigger) {
 	position: relative !important;
 	padding-right: 38px !important;
@@ -96,6 +138,99 @@
 
 [data-test="toggle-lyrics"][aria-pressed="true"] .rl-lyrics-menu-trigger:hover {
 	color: rgba(0, 0, 0, 0.5);
+}
+
+/* AI sparkle: rainbow gradient + glow */
+body.rl-ai-lyrics .rl-lyrics-menu-trigger {
+	--rl-ai-c1: #ff6b9d;
+	--rl-ai-c2: #ffd166;
+	--rl-ai-c3: #5ee7ff;
+	--rl-ai-c4: #a78bfa;
+	--rl-ai-glow: 60%;
+}
+
+body.rl-ai-lyrics [data-test="toggle-lyrics"][aria-pressed="true"] .rl-lyrics-menu-trigger {
+	--rl-ai-c1: #e8336f;
+	--rl-ai-c2: #f08c00;
+	--rl-ai-c3: #0a9bd0;
+	--rl-ai-c4: #7048e8;
+	--rl-ai-glow: 40%;
+}
+
+body.rl-ai-lyrics .rl-lyrics-menu-trigger svg path {
+	fill: url(#rl-ai-gradient);
+}
+
+body.rl-ai-lyrics .rl-lyrics-menu-trigger svg {
+	filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rl-ai-c4) var(--rl-ai-glow), transparent));
+	transition: opacity 0.2s ease;
+	animation: rl-ai-glow 6s linear infinite;
+}
+
+body.rl-ai-lyrics [data-test="toggle-lyrics"][aria-pressed="true"] .rl-lyrics-menu-trigger:hover svg {
+	opacity: 0.7;
+}
+
+body.rl-ai-lyrics .rl-ai-stop {
+	animation: rl-ai-flow 6s linear infinite;
+}
+
+body.rl-ai-lyrics .rl-ai-stop:nth-child(1) {
+	stop-color: var(--rl-ai-c1);
+}
+
+body.rl-ai-lyrics .rl-ai-stop:nth-child(2) {
+	stop-color: var(--rl-ai-c2);
+	animation-delay: -1.5s;
+}
+
+body.rl-ai-lyrics .rl-ai-stop:nth-child(3) {
+	stop-color: var(--rl-ai-c3);
+	animation-delay: -3s;
+}
+
+body.rl-ai-lyrics .rl-ai-stop:nth-child(4) {
+	stop-color: var(--rl-ai-c4);
+	animation-delay: -4.5s;
+}
+
+@keyframes rl-ai-flow {
+	0%,
+	100% {
+		stop-color: var(--rl-ai-c1);
+	}
+	25% {
+		stop-color: var(--rl-ai-c2);
+	}
+	50% {
+		stop-color: var(--rl-ai-c3);
+	}
+	75% {
+		stop-color: var(--rl-ai-c4);
+	}
+}
+
+@keyframes rl-ai-glow {
+	0%,
+	100% {
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rl-ai-c4) var(--rl-ai-glow), transparent));
+	}
+	25% {
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rl-ai-c1) var(--rl-ai-glow), transparent));
+	}
+	50% {
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rl-ai-c2) var(--rl-ai-glow), transparent));
+	}
+	75% {
+		filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rl-ai-c3) var(--rl-ai-glow), transparent));
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	body.rl-ai-lyrics .rl-lyrics-menu-trigger svg,
+	body.rl-ai-lyrics .rl-ai-stop {
+		animation: none;
+	}
 }
 
 /* Animate widening when dropdown opens */
@@ -247,14 +382,14 @@ body.rl-dropdown-open [data-test="toggle-lyrics"] {
 /* MARKER: Integrated Seek Bar */
 /* Moves the seekbar to the top border of the player bar (inspired by Amethyst) */
 
-/* Scrubber row stays in flow — centers the time block as one unit */
+/* Keep scrubber row in flow, centered */
 body.rl-integrated-seekbar .rl-seekbar-container {
 	justify-content: center !important;
 	align-items: center !important;
 	gap: 0 !important;
 }
 
-/* Single string: "current | duration" — synced from native <time> nodes */
+/* Combined "current | duration" time */
 body.rl-integrated-seekbar .rl-seekbar-combined-time {
 	opacity: 0.5 !important;
 	white-space: nowrap !important;
@@ -263,7 +398,7 @@ body.rl-integrated-seekbar .rl-seekbar-combined-time {
 	font-variant-numeric: tabular-nums !important;
 }
 
-/* Hide Tidal's two time <p> cells (class + structural — survives React re-renders) */
+/* Hide Tidal's native time cells */
 body.rl-integrated-seekbar .rl-seekbar-native-time {
 	display: none !important;
 }
@@ -273,7 +408,7 @@ body.rl-integrated-seekbar [data-test="footer-player"] .rl-seekbar-container > p
 	display: none !important;
 }
 
-/* Scrubber bar — top strip: same width as footer player, top corners = Floating Bar Corner Radius */
+/* Scrubber strip along the player bar top */
 body.rl-integrated-seekbar .rl-seekbar-bar {
 	position: absolute !important;
 	top: 0 !important;
@@ -306,7 +441,7 @@ body.rl-integrated-seekbar .rl-seekbar-bar:hover [class*="knob"] {
 	opacity: 1 !important;
 }
 
-/* Track elements only: top corners follow player bar radius, bottom square */
+/* Track: rounded top, square bottom */
 body.rl-integrated-seekbar .rl-seekbar-bar [data-test="progress-bar"],
 body.rl-integrated-seekbar .rl-seekbar-bar [data-test="progress-bar"] [class*="_wrapper"],
 body.rl-integrated-seekbar .rl-seekbar-bar [data-test="progress-bar"] [class*="_range"],
@@ -494,7 +629,7 @@ body.rl-integrated-seekbar [data-test="footer-player"] [class*="playerContent"] 
 	filter: none;
 }
 
-/* Right singer: mirror shift + pre-wrap (inactive pl = shift, active pr = shift) */
+/* Right singer: mirrored shift + pre-wrap */
 .rl-wbw-line.rl-singer-right:not(.rl-wbw-line-active) {
 	padding-left: var(--rl-line-shift, 20px);
 	padding-right: 0;
@@ -658,9 +793,7 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 	filter: none !important;
 }
 
-/* AI-generated timing: soften word-mode color flips so a boundary that's off
-   by a bit has no crisp edge to expose it. Per-span --rl-wipe-feather is set
-   inline from the AI model's confidence. SUPER WIP */
+/* AI timing: softer word color flips SUPER WIP */
 .rl-wbw-container.rl-ai .rl-wbw-word {
 	transition:
 		text-shadow 0.25s ease-out,
@@ -765,7 +898,7 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 	transform-origin: right;
 }
 
-/* Duet: 20% column inset + same shift / pre-wrap as single (inactive reserves along outer edge) */
+/* Duet: 20% inset, same shift as single */
 .rl-dual-side .rl-wbw-line.rl-singer-left:not(.rl-wbw-line-active) {
 	padding-left: 0;
 	padding-right: calc(20% + var(--rl-line-shift, 20px));
@@ -835,6 +968,23 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 [data-test="now-playing-artwork"] {
 	/* biome-ignore lint: Override flat corners */
 	border-radius: 10px !important;
+}
+
+/* Animated artwork (live art) overlays the tile */
+.rl-animated-art {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: inherit;
+	z-index: 1;
+	pointer-events: none;
+	transition: opacity 0.3s ease;
+	opacity: 0;
+}
+.rl-animated-art-visible {
+	opacity: 1;
 }
 
 /* Hide the Overlay Scrollbar (people just use mouse scroll) */

@@ -20,9 +20,7 @@ new StyleTag("Element-Hider", unloads, styles);
 let targetElement: HTMLElement | null = null;
 let hiddenElements = new WeakSet<HTMLElement>();
 
-// Count of elements currently hidden in the live DOM. The `.element-hider-hidden`
-// class is the source of truth — querying it avoids retaining detached nodes
-// across SPA navigations.
+// Count hidden elements in the live DOM
 function getHiddenCount(): number {
 	return document.querySelectorAll(".element-hider-hidden").length;
 }
@@ -371,7 +369,7 @@ let customMenu: HTMLElement | null = null;
 let contextMenuTimeout: number | null = null;
 let waitingForBuiltInMenu = false;
 
-// Listen for right-click events to capture the target for context menu
+// Grab the right-clicked element
 document.addEventListener(
 	"contextmenu",
 	(event: MouseEvent) => {
@@ -403,18 +401,18 @@ document.addEventListener(
 		const eventX = event.clientX;
 		const eventY = event.clientY;
 
-		// Allow native context menu by default; we'll show our custom menu only if needed
+		// Native menu first, ours only if needed
 
 		// Wait to see if the built-in context menu appears
 		contextMenuTimeout = window.setTimeout(() => {
-			// If we're still waiting and no built-in menu appeared, show our custom menu
+			// No built-in menu appeared, show ours
 			if (waitingForBuiltInMenu && currentContextElement) {
 				showCustomMenu(eventX, eventY);
 			}
 			waitingForBuiltInMenu = false;
 		}, 150); // Wait 150ms for built-in menu
 
-		// Don't prevent default initially - let Luna try to handle the context menu
+		// Let Luna handle the context menu first
 	},
 	true,
 );

@@ -109,9 +109,9 @@ export interface WordLyricsResponse {
 		songParts?: Array<{ name: string; time: number; duration: number }>;
 	};
 	_cached?: boolean;
-	/** true when timings came from the hosted Radiant AI model (?synthesize=true) */
+	// Timings came from Radiant AI
 	_synthesized?: boolean;
-	/** original line-level data, kept so AI timings can be toggled off without a refetch */
+	// Original lines, so AI can be turned off without refetch
 	lines?: ApiLine[];
 }
 
@@ -200,6 +200,127 @@ export async function fetchLyrics(
 
 	trace.log("RL API: All Endpoints Failed");
 	return null;
+}
+
+export interface AnimatedArtwork {
+	url: string;
+	url_tall: string;
+}
+
+export interface ArtworkLookup {
+	artwork: AnimatedArtwork | null;
+	// Album key if album matched, else title key
+	key: string;
+}
+
+// Key for this exact track only
+export const artworkTitleKey = (artist: string, title: string): string =>
+	`${artist}\u0000\u0000${title}`;
+
+// ISRC lookup, immune to name mismatches
+const artworkIsrcUrl = (isrc: string): string =>
+	`https://ama.trainswift.net/api/v1/artwork/search?isrc=${encodeURIComponent(isrc)}`;
+
+function artworkSearchUrl(
+	title: string,
+	artist: string,
+	album?: string,
+): string {
+	let q = `title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`;
+	// Omit the album param entirely when absent (a literal "undefined" string makes the endpoint miss)
+	if (album && album.trim() !== "") q += `&album=${encodeURIComponent(album.trim())}`;
+	return `https://ama.trainswift.net/api/v1/artwork/search?${q}`;
+}
+
+// Cache hits and misses, album key only for album matches
+const animatedArtworkCache = new Map<string, AnimatedArtwork | null>();
+const ARTWORK_CACHE_MAX = 200;
+
+export async function fetchAnimatedArtwork(
+	title: string,
+	artist: string,
+	album?: string,
+	isrc?: string,
+	signal?: AbortSignal,
+): Promise<ArtworkLookup> {
+	const albumName = album?.trim() || "";
+	const albumPresent = albumName !== "";
+	const isrcTrimmed = isrc?.trim() || "";
+	// Album key, or title key without an album
+	const cacheKey = albumPresent
+		? `${artist}\u0000${albumName}`
+		: artworkTitleKey(artist, title);
+	if (animatedArtworkCache.has(cacheKey)) {
+		return { artwork: animatedArtworkCache.get(cacheKey) ?? null, key: cacheKey };
+	}
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 10000);
+	const onAbort = () => controller.abort();
+	signal?.addEventListener("abort", onAbort, { once: true });
+	if (signal?.aborted) controller.abort();
+	const tryFetch = async (url: string): Promise<AnimatedArtwork | null> => {
+		try {
+			sylTrace(`Animated Artwork: fetching ${url}`);
+			const res = await fetch(url, { signal: controller.signal });
+			if (!res.ok) {
+				trace.log(`Animated Artwork: fetch failed ${res.status} | ${url}`);
+				return null;
+			}
+			const data = (await res.json()) as {
+				url?: string;
+				url_tall?: string;
+				message?: string;
+			};
+			if (data.url && data.url_tall) {
+				return { url: data.url, url_tall: data.url_tall };
+			}
+			trace.log(`Animated Artwork: none found | ${url}`);
+			return null;
+		} catch (err) {
+			if (err instanceof DOMException && err.name === "AbortError") {
+				trace.log(`Animated Artwork: request timed out | ${url}`);
+			} else {
+				trace.log(`Animated Artwork: request error | ${url} | ${err}`);
+			}
+			return null;
+		}
+	};
+
+	const remember = (result: AnimatedArtwork | null): AnimatedArtwork | null => {
+		// A cancelled attempt says nothing about the track.
+		if (controller.signal.aborted) return result;
+		if (animatedArtworkCache.size >= ARTWORK_CACHE_MAX) {
+			const oldest = animatedArtworkCache.keys().next().value;
+			if (oldest !== undefined) animatedArtworkCache.delete(oldest);
+		}
+		animatedArtworkCache.set(cacheKey, result);
+		return result;
+	};
+
+	try {
+		// ISRC first, misses fall through uncached
+		if (isrcTrimmed) {
+			const byIsrc = await tryFetch(artworkIsrcUrl(isrcTrimmed));
+			if (byIsrc) return { artwork: remember(byIsrc), key: cacheKey };
+		}
+		// Fallback: exact album first; on a miss retry once without the album (server-side disambiguation is imperfect)
+		const withAlbum = await tryFetch(
+			artworkSearchUrl(title, artist, album),
+		);
+		// Album-matched: cacheable, and its scope is the whole album.
+		if (withAlbum) return { artwork: remember(withAlbum), key: cacheKey };
+		if (albumPresent) {
+			// Title-only result, scope it to this track
+			const artwork = await tryFetch(artworkSearchUrl(title, artist));
+			return { artwork, key: artworkTitleKey(artist, title) };
+		}
+		// No album: the title key is already track-specific.
+		return { artwork: remember(null), key: cacheKey };
+	} finally {
+		clearTimeout(timeout);
+		signal?.removeEventListener("abort", onAbort);
+	}
 }
 
 export async function flushLyrics(track: {

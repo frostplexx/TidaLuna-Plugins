@@ -20,6 +20,11 @@ import {
 	romanizeLyrics as romanizeLyricsApi,
 } from "./api";
 import { KawarpLayer } from "./backdrop";
+import {
+	AnimatedArtworkLayer,
+	ART_TILE_SELECTOR,
+	MINI_ART_SELECTOR,
+} from "./artwork";
 import { Settings, settings } from "./Settings";
 
 import backdropStylesCss from "file://backdrop-styles.css?minify";
@@ -119,7 +124,7 @@ const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
 	};
 };
 
-/** CSS var for integrated seekbar top corners — matches Floating Bar Corner Radius when floating is on */
+// Seekbar top corners match the floating bar radius
 const applyIntegratedSeekbarChrome = (): void => {
 	const footer = document.querySelector(
 		'[data-test="footer-player"]',
@@ -195,7 +200,7 @@ const applyPlayerBarTintToElement = (): void => {
 	applyIntegratedSeekbarChrome();
 };
 
-// When floating is disabled, inject square-bar CSS to override Tidal's native floating styles
+// Floating off: inject square bar CSS
 const applyFloatingPlayerBar = (): void => {
 	if (settings.floatingPlayerBar) {
 		floatingPlayerBarStyleTag.remove();
@@ -536,14 +541,59 @@ const toggleRadiantLyrics = function (): void {
 
 // Create buttons
 let flushLocked = false;
+let flushSpinning = false;
+
+// Swap flush icon and loading spinner
+const setFlushSpinner = (on: boolean): void => {
+	flushSpinning = on;
+	const btn = document.querySelector(".flush-lyrics-button") as HTMLButtonElement | null;
+	if (!btn) return;
+	const svg = btn.querySelector("svg");
+	if (!svg) return;
+	const svgClass = (svg.getAttribute("class") ?? "")
+		.split(/\s+/)
+		.filter((c) => c && c !== "rl-spinner");
+	if (on) {
+		if (svg.classList.contains("rl-spinner")) return;
+		btn.setAttribute("data-tip", "Loading lyrics…");
+		btn.setAttribute("aria-label", "Loading lyrics…");
+		const spinner = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		if (svgClass.length) spinner.setAttribute("class", svgClass.join(" "));
+		spinner.classList.add("rl-spinner");
+		spinner.setAttribute("viewBox", "0 0 20 20");
+		spinner.setAttribute("aria-hidden", "true");
+		const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		circle.setAttribute("cx", "10");
+		circle.setAttribute("cy", "10");
+		circle.setAttribute("r", "8");
+		circle.setAttribute(
+			"style",
+			"fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-dasharray:42 8",
+		);
+		spinner.appendChild(circle);
+		svg.replaceWith(spinner);
+	} else {
+		const spinner = btn.querySelector("svg.rl-spinner");
+		if (!spinner) return;
+		const syncSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		if (svgClass.length) syncSvg.setAttribute("class", svgClass.join(" "));
+		syncSvg.setAttribute("viewBox", "0 0 20 20");
+		const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+		use.setAttribute("href", "#general__lyrics-sync");
+		syncSvg.appendChild(use);
+		spinner.replaceWith(syncSvg);
+	}
+};
+
 const unlockFlush = (): void => {
 	flushLocked = false;
+	setFlushSpinner(false);
 	const btn = document.querySelector(".flush-lyrics-button") as HTMLButtonElement;
 	if (btn) {
 		btn.disabled = false;
 		btn.style.opacity = "";
 		btn.style.cursor = "";
-		btn.setAttribute("title", "Flush Lyrics");
+		btn.setAttribute("data-tip", "Flush Lyrics");
 		btn.setAttribute("aria-label", "Flush Lyrics");
 	}
 };
@@ -555,15 +605,17 @@ const lockFlush = (): void => {
 		btn.style.opacity = "0.3";
 		btn.style.cursor = "not-allowed";
 	}
+	setFlushSpinner(true);
 };
 const disableFlushNoLyrics = (): void => {
 	flushLocked = true;
+	setFlushSpinner(false);
 	const btn = document.querySelector(".flush-lyrics-button") as HTMLButtonElement;
 	if (btn) {
 		btn.disabled = true;
 		btn.style.opacity = "0.3";
 		btn.style.cursor = "not-allowed";
-		btn.setAttribute("title", "Track has no lyrics");
+		btn.setAttribute("data-tip", "Track has no lyrics");
 		btn.setAttribute("aria-label", "Track has no lyrics");
 	}
 };
@@ -584,9 +636,11 @@ const flushLyrics = async (): Promise<void> => {
 		if (!result.ok) {
 			if (result.notFound) {
 				toast("No lyrics found for this track");
+				unlockFlush();
 				return;
 			}
 			toastErr(`Flush failed (${result.status})`);
+			unlockFlush();
 			return;
 		}
 		const data = result.data;
@@ -602,9 +656,12 @@ const flushLyrics = async (): Promise<void> => {
 			cachedLyricsKey = null;
 			cachedLyricsData = null;
 			onTrackChange();
+		} else {
+			unlockFlush();
 		}
 	} catch (err) {
 		toastErr(`Flush error: ${err instanceof Error ? err.message : String(err)}`);
+		unlockFlush();
 	}
 };
 
@@ -622,7 +679,7 @@ const flushBtn = function (): void {
 	flushButton.removeAttribute("data-test");
 	flushButton.setAttribute("type", "button");
 	flushButton.setAttribute("aria-label", "Flush Lyrics");
-	flushButton.setAttribute("title", "Flush Lyrics");
+	flushButton.setAttribute("data-tip", "Flush Lyrics");
 	flushButton.disabled = true;
 	flushButton.style.opacity = "0.3";
 	flushButton.style.cursor = "not-allowed";
@@ -640,6 +697,12 @@ const flushBtn = function (): void {
 	svgEl.appendChild(useEl);
 	spanWrapper.appendChild(svgEl);
 	flushButton.appendChild(spanWrapper);
+	// Recreated while loading, show the spinner again
+	if (flushSpinning) {
+		flushButton.setAttribute("data-tip", "Loading lyrics…");
+		flushButton.setAttribute("aria-label", "Loading lyrics…");
+		setFlushSpinner(true);
+	}
 
 	flushButton.onclick = () => flushLyrics();
 
@@ -731,6 +794,17 @@ const setLayerRunning = (
 	if (now - pauseHiddenSince[slot] >= PAUSE_GRACE_MS) layer.setPaused(true);
 };
 
+// Cached so the 200ms tick skips a document-wide query.
+let cachedNowPlayingPanel: HTMLElement | null = null;
+
+// On screen, not just mounted.
+const artPanelVisible = (panel: HTMLElement): boolean => {
+	if (typeof panel.checkVisibility === "function") {
+		return panel.checkVisibility({ checkVisibilityCSS: true });
+	}
+	return getComputedStyle(panel).visibility !== "hidden";
+};
+
 const syncBackdropActivity = (): void => {
 	// Stock backdrop keeps current (no shader loop)
 	if (stockContainer) applyStockCoverEverywhere();
@@ -763,6 +837,18 @@ const syncBackdropActivity = (): void => {
 			(global?.isVisible() ?? false),
 		now,
 	);
+
+	// Pause art when off screen (ticks 5x/sec)
+	if (animatedArtworkLayer) {
+		if (!cachedNowPlayingPanel?.isConnected) {
+			cachedNowPlayingPanel = document.querySelector(
+				'[class*="_nowPlayingContainer"]',
+			) as HTMLElement | null;
+		}
+		animatedArtworkLayer.syncVisibility(
+			!!cachedNowPlayingPanel && artPanelVisible(cachedNowPlayingPanel),
+		);
+	}
 };
 
 /** cover art @ resolution worth sampling */
@@ -1019,6 +1105,39 @@ const updateRadiantLyricsBackdrop = function (): void {
 	}
 };
 
+// MARKER: Animated Artwork (live artwork on the artwork tiles)
+let animatedArtworkLayer: AnimatedArtworkLayer | null = null;
+let lastArtworkTile: Element | null = null;
+let lastMiniArtworkTile: Element | null = null;
+let artworkUpdateSeq = 0;
+
+// Album key, or title key if no album
+const artworkKey = (t: TrackInfo): string =>
+	t.album && t.album.trim() !== ""
+		? `${t.artist}\u0000${t.album.trim()}`
+		: `${t.artist}\u0000\u0000${t.title}`;
+
+// Load art for the playing track
+const updateAnimatedArtwork = async (): Promise<void> => {
+	const seq = ++artworkUpdateSeq;
+	if (!settings.animatedArtwork) {
+		animatedArtworkLayer?.dispose();
+		animatedArtworkLayer = null;
+		lastArtworkTile = null;
+		lastMiniArtworkTile = null;
+		return;
+	}
+	animatedArtworkLayer ??= new AnimatedArtworkLayer();
+	const target = await getTrackInfo();
+	// Newer track change won, bail
+	if (seq !== artworkUpdateSeq || !target || !animatedArtworkLayer) return;
+	await animatedArtworkLayer.setTrack(target, artworkKey(target));
+};
+
+(window as any).updateAnimatedArtwork = updateAnimatedArtwork;
+(window as any).updateAnimatedArtworkRate = (): void =>
+	animatedArtworkLayer?.refresh();
+
 // Make these functions available globally so Settings can call them
 (window as any).updateRadiantLyricsStyles = updateRadiantLyricsStyles;
 (window as any).updateRadiantLyricsBackdrop = updateRadiantLyricsBackdrop;
@@ -1053,8 +1172,14 @@ updateRadiantLyricsTextGlow();
 // Init global background
 updateCoverArtBackground(1);
 
+// Deferred: getTrackInfo() is declared further down and would be uninitialised.
+queueMicrotask(() => void updateAnimatedArtwork());
+
 // Cleanups
 unloads.add(() => {
+	animatedArtworkLayer?.dispose();
+	animatedArtworkLayer = null;
+	cachedNowPlayingPanel = null;
 	cleanUpDynamicArt();
 	cleanUpStockCoverEverywhere();
 	document.body.classList.remove("rl-backdrop-active");
@@ -1108,7 +1233,7 @@ unloads.add(() => {
 // MARKER: Lyrics Menu (dropdown on the lyrics toggle)
 
 const LYRICS_MENU_ICON =
-	'<svg viewBox="0 0 512 512" width="16" height="16"><path fill="currentColor" d="M208,512a24.84,24.84,0,0,1-23.34-16l-39.84-103.6a16.06,16.06,0,0,0-9.19-9.19L32,343.34a25,25,0,0,1,0-46.68l103.6-39.84a16.06,16.06,0,0,0,9.19-9.19L184.66,144a25,25,0,0,1,46.68,0l39.84,103.6a16.06,16.06,0,0,0,9.19,9.19l103,39.63A25.49,25.49,0,0,1,400,320.52a24.82,24.82,0,0,1-16,22.82l-103.6,39.84a16.06,16.06,0,0,0-9.19,9.19L231.34,496A24.84,24.84,0,0,1,208,512Zm66.85-254.84h0Z"/><path fill="currentColor" d="M88,176a14.67,14.67,0,0,1-13.69-9.4L57.45,122.76a7.28,7.28,0,0,0-4.21-4.21L9.4,101.69a14.67,14.67,0,0,1,0-27.38L53.24,57.45a7.31,7.31,0,0,0,4.21-4.21L74.16,9.79A15,15,0,0,1,86.23.11,14.67,14.67,0,0,1,101.69,9.4l16.86,43.84a7.31,7.31,0,0,0,4.21,4.21L166.6,74.31a14.67,14.67,0,0,1,0,27.38l-43.84,16.86a7.28,7.28,0,0,0-4.21,4.21L101.69,166.6A14.67,14.67,0,0,1,88,176Z"/><path fill="currentColor" d="M400,256a16,16,0,0,1-14.93-10.26l-22.84-59.37a8,8,0,0,0-4.6-4.6l-59.37-22.84a16,16,0,0,1,0-29.86l59.37-22.84a8,8,0,0,0,4.6-4.6L384.9,42.68a16.45,16.45,0,0,1,13.17-10.57,16,16,0,0,1,16.86,10.15l22.84,59.37a8,8,0,0,0,4.6,4.6l59.37,22.84a16,16,0,0,1,0,29.86l-59.37,22.84a8,8,0,0,0-4.6,4.6l-22.84,59.37A16,16,0,0,1,400,256Z"/></svg>';
+	'<svg viewBox="0 0 512 512" width="16" height="16"><defs><linearGradient id="rl-ai-gradient" gradientUnits="userSpaceOnUse" x1="0" y1="512" x2="512" y2="0"><stop class="rl-ai-stop" offset="0" stop-color="#ff6b9d"/><stop class="rl-ai-stop" offset="0.35" stop-color="#ffd166"/><stop class="rl-ai-stop" offset="0.65" stop-color="#5ee7ff"/><stop class="rl-ai-stop" offset="1" stop-color="#a78bfa"/></linearGradient></defs><path fill="currentColor" d="M208,512a24.84,24.84,0,0,1-23.34-16l-39.84-103.6a16.06,16.06,0,0,0-9.19-9.19L32,343.34a25,25,0,0,1,0-46.68l103.6-39.84a16.06,16.06,0,0,0,9.19-9.19L184.66,144a25,25,0,0,1,46.68,0l39.84,103.6a16.06,16.06,0,0,0,9.19,9.19l103,39.63A25.49,25.49,0,0,1,400,320.52a24.82,24.82,0,0,1-16,22.82l-103.6,39.84a16.06,16.06,0,0,0-9.19,9.19L231.34,496A24.84,24.84,0,0,1,208,512Zm66.85-254.84h0Z"/><path fill="currentColor" d="M88,176a14.67,14.67,0,0,1-13.69-9.4L57.45,122.76a7.28,7.28,0,0,0-4.21-4.21L9.4,101.69a14.67,14.67,0,0,1,0-27.38L53.24,57.45a7.31,7.31,0,0,0,4.21-4.21L74.16,9.79A15,15,0,0,1,86.23.11,14.67,14.67,0,0,1,101.69,9.4l16.86,43.84a7.31,7.31,0,0,0,4.21,4.21L166.6,74.31a14.67,14.67,0,0,1,0,27.38l-43.84,16.86a7.28,7.28,0,0,0-4.21,4.21L101.69,166.6A14.67,14.67,0,0,1,88,176Z"/><path fill="currentColor" d="M400,256a16,16,0,0,1-14.93-10.26l-22.84-59.37a8,8,0,0,0-4.6-4.6l-59.37-22.84a16,16,0,0,1,0-29.86l59.37-22.84a8,8,0,0,0,4.6-4.6L384.9,42.68a16.45,16.45,0,0,1,13.17-10.57,16,16,0,0,1,16.86,10.15l22.84,59.37a8,8,0,0,0,4.6,4.6l59.37,22.84a16,16,0,0,1,0,29.86l-59.37,22.84a8,8,0,0,0-4.6,4.6l-22.84,59.37A16,16,0,0,1,400,256Z"/></svg>';
 
 const applyLyricsMenuIcon = (): void => {
 	const trigger = document.querySelector(
@@ -1118,6 +1243,22 @@ const applyLyricsMenuIcon = (): void => {
 	trigger.innerHTML = LYRICS_MENU_ICON;
 	trigger.style.paddingLeft = "5px";
 };
+
+const LYRICS_MENU_TIP = "Lyrics Options";
+
+// Rainbow sparkle when syllables are AI generated
+const syncAiIndicator = (): void => {
+	document.body.classList.toggle("rl-ai-lyrics", lyricsIsAiGenerated);
+	document
+		.querySelector(".rl-lyrics-menu-trigger")
+		?.setAttribute(
+			"title",
+			lyricsIsAiGenerated
+				? "Syllable Lyrics were generated using AI"
+				: LYRICS_MENU_TIP,
+		);
+};
+unloads.add(() => document.body.classList.remove("rl-ai-lyrics"));
 
 // Console: Syllables.log = true/false
 // Verbose logging for word/syllable lyrics (hidden setting)
@@ -1319,7 +1460,7 @@ const createLyricsMenu = (): void => {
 
 	const trigger = document.createElement("div");
 	trigger.className = "rl-lyrics-menu-trigger";
-	trigger.setAttribute("title", "Lyrics Options");
+	trigger.setAttribute("title", LYRICS_MENU_TIP);
 	trigger.innerHTML = LYRICS_MENU_ICON;
 
 	for (const evtName of [
@@ -1357,6 +1498,7 @@ const createLyricsMenu = (): void => {
 	);
 
 	lyricsToggle.appendChild(trigger);
+	syncAiIndicator();
 
 	if (lyricsMenuOpen) {
 		positionDropdown();
@@ -1388,6 +1530,19 @@ function setupLyricsMenuObserver(): void {
 		if (toggle && !toggle.querySelector(".rl-lyrics-menu-trigger")) {
 			createLyricsMenu();
 		}
+	});
+
+	// Covers remount, move the video over (no refetch)
+	observe<HTMLElement>(unloads, ART_TILE_SELECTOR, (tile) => {
+		// Identity check, ignores our own video
+		if (tile === lastArtworkTile) return;
+		lastArtworkTile = tile;
+		animatedArtworkLayer?.rebind();
+	});
+	observe<HTMLElement>(unloads, MINI_ART_SELECTOR, (tile) => {
+		if (tile === lastMiniArtworkTile) return;
+		lastMiniArtworkTile = tile;
+		animatedArtworkLayer?.rebind();
 	});
 
 	// Apply word lyrics when lyrics container appears or reappears
@@ -1424,6 +1579,7 @@ interface TrackInfo {
 	title: string;
 	artist: string;
 	isrc?: string;
+	album?: string;
 }
 
 interface SyntheticNativeLyricsState {
@@ -1471,9 +1627,7 @@ const getLyricsStyle = (): number => (isWordMode() ? settings.lyricsStyle : 0);
 const getNowPlayingLyricsPanel = (): HTMLElement | null =>
 	document.querySelector('[data-test="now-playing-lyrics"]') as HTMLElement | null;
 
-// Find the lyrics text container (wraps the individual lyrics-line spans).
-// In the new player-market UI this element has no data-test; we locate it by
-// walking up from the first lyrics-line span.
+// Find the lyrics container (no data-test in new UI)
 const findLyricsContainer = (): HTMLElement | null => {
 	const line = document.querySelector('span[data-test="lyrics-line"]');
 	if (line?.parentElement?.parentElement) {
@@ -1482,8 +1636,7 @@ const findLyricsContainer = (): HTMLElement | null => {
 	return null;
 };
 
-// Check whether a tidal lyrics span is currently the active/highlighted line.
-// Player-market UI uses a CSS class matching _current_*.
+// Is this Tidal line active (_current_ class)
 const isTidalSpanActive = (span: HTMLElement): boolean => {
 	return Array.from(span.classList).some((c) => c.startsWith("_current_"));
 };
@@ -2083,8 +2236,9 @@ const trackInfoFromReduxProductId = (productId: string): TrackInfo | null => {
 	const title = String(attr.title ?? "");
 	const artist = String(attr.artist?.name ?? getPrimaryArtistName(attr.artists) ?? "");
 	const isrc = attr.isrc ?? undefined;
+	const album = attr.album?.title ?? undefined;
 	if (!title || !artist) return null;
-	return { trackId: productId, title, artist, isrc };
+	return { trackId: productId, title, artist, isrc, album };
 };
 
 // MARKER: Playback clock
@@ -2098,7 +2252,7 @@ const trackInfoFromReduxProductId = (productId: string): TrackInfo | null => {
 // So.. pick the clock per client <3
 const IS_NATIVE_CLIENT = /TidaLunar/i.test(navigator.userAgent);
 
-// currentTime is present at runtime but missing from the pinned luna typings
+// currentTime exists but isn't in luna's typings
 const playerCurrentTime = (): number =>
 	(PlayState as unknown as { currentTime: number }).currentTime;
 
@@ -2301,9 +2455,10 @@ const getTrackInfo = async (): Promise<TrackInfo | null> => {
 			mi.tidalItem.artist?.name ?? getPrimaryArtistName(mi.tidalItem.artists) ?? ""; // REMIX Detection
 		const isrc = mi.tidalItem.isrc ?? undefined;
 		const trackId = String(mi.tidalItem.id ?? PlayState.playbackContext?.actualProductId ?? "");
+		const album = mi.tidalItem.album?.title ?? undefined;
 
 		if (!baseTitle || !artist || !trackId) return null;
-		return { trackId, title, artist, isrc };
+		return { trackId, title, artist, isrc, album };
 	}
 
 	const state = getReduxState();
@@ -2527,10 +2682,7 @@ const restoreTidalLyrics = (): void => {
 	savedTidalClasses = null;
 };
 
-// compute left/right singer sides for duet positioning
-// Uses a pre-computed fixed mapping: first person = left, second person = right,
-// 3rd+ persons / group / other = left. Same singer always gets the same side.
-// (thx Opus 4.6 for this <3)
+// Duet sides: 2nd singer right, rest left (thx Opus 4.6 <3)
 const computeSingerSides = (
 	data: WordLine[],
 	agents: Record<string, { type: string; name: string; alias: string }>,
@@ -2750,8 +2902,7 @@ const buildWordSpans = (): {
 				span.textContent = text;
 			}
 			forceStyle(span, WORD_SPAN_STYLE);
-			// Confidence-proportional wipe feather: crisp edges where the
-			// synthesizer had real evidence, soft where it guessed. SUPER WIP
+			// Feather wipe by AI confidence SUPER WIP
 			if (confidence !== undefined) {
 				const feather = 0.55 + (1 - Math.max(0, Math.min(1, confidence))) * 1.3;
 				span.style.setProperty("--rl-wipe-feather", `${feather.toFixed(2)}em`);
@@ -2767,7 +2918,7 @@ const buildWordSpans = (): {
 
 		const sylDisplay = (s: WordTiming) => romanizedText(s);
 
-		// Group syllables into words: trailing whitespace in syl.text marks a word boundary
+		// Group syllables into words (trailing space = boundary)
 		const wordGroups: number[][] = [];
 		let currentGroup: number[] = [];
 		for (let si = 0; si < syllabus.length; si++) {
@@ -2782,7 +2933,7 @@ const buildWordSpans = (): {
 		}
 
 		if (effectiveStyle === 0) {
-			// Line mode: one span per container (main / bg) — no word splitting
+			// Line mode: one span per container, no word split
 			const mainSyls = syllabus.filter((s) => !splitBg || !s.isBackground);
 			const bgSyls = splitBg ? syllabus.filter((s) => s.isBackground) : [];
 
@@ -3140,11 +3291,7 @@ const applyInactiveBlurState = (
 	}
 };
 
-// Re-apply active line + word state to freshly-built DOM elements after a
-// rebuild (reapply / re-render observer) WITHOUT triggering CSS transitions.
-// This prevents the padding-left "swipe-shift" animation from replaying when
-// the container is reconstructed during scroll-unlock, resync, or React
-// re-renders.
+// Reapply active state after a rebuild, without transitions
 const applyActiveLineStateNoTransition = (): void => {
 	if (primaryLineIdx < 0 || activeLineIdxs.size === 0 || lines.length === 0) return;
 
@@ -3170,7 +3317,7 @@ const applyActiveLineStateNoTransition = (): void => {
 		el.setAttribute("data-current", "true");
 	}
 
-	// Restore word-level state on active lines so the tick loop doesn't flash
+	// Restore word state so the tick loop doesn't flash
 	const nowMs = getPlaybackMs();
 	activeWordEls.clear();
 	activeBgWordEls.clear();
@@ -3247,7 +3394,7 @@ const applyActiveLineStateNoTransition = (): void => {
 		}
 	}
 
-	// Force reflow so the suppressed transitions take effect, then restore them
+	// Force reflow, then restore transitions
 	void document.body.offsetHeight;
 	for (const line of lines) {
 		line.el.style.removeProperty("transition");
@@ -3468,6 +3615,7 @@ const teardown = (): void => {
 	lyricsData = null;
 	lyricsResponse = null;
 	lyricsIsAiGenerated = false;
+	syncAiIndicator();
 	lines = [];
 	activeWordEls.clear();
 	activeBgWordEls.clear();
@@ -3479,8 +3627,7 @@ const teardown = (): void => {
 	applyScrollOwnerState();
 };
 
-// find scrollable parent
-// to avoid scrolling a shared ancestor that would shift the play queue
+// find scrollable parent (don't shift the play queue)
 const findScroller = (el: HTMLElement): HTMLElement => {
 	const lyricsPanel = el.closest(
 		'[data-test="now-playing-lyrics"]',
@@ -4009,6 +4156,7 @@ const onTrackChange = async (): Promise<void> => {
 		if (token !== trackChangeToken) return;
 		if (!trackInfo) {
 			trace.log("could not get track info from playback state");
+			setFlushSpinner(false);
 			return;
 		}
 		const nativeHasLyrics = trackHasNativeLyrics(trackInfo.trackId);
@@ -4074,6 +4222,7 @@ const onTrackChange = async (): Promise<void> => {
 		// MARKER: Radiant AI Syllables [RL API]
 		if (response.type === "Word" && response._synthesized) {
 			lyricsIsAiGenerated = true;
+			syncAiIndicator();
 			sylLog(
 				`[RL-Syllable] AI generated syllable timings for ${response.data.length} lines`,
 			);
@@ -4303,6 +4452,7 @@ function setupHeaderObserver(): void {
 // Apply seeker color on track change
 onGlobalTrackChange(() => {
 	updateCoverArtBackground();
+	void updateAnimatedArtwork();
 	if (settings.qualityProgressColor) applyQualityProgressColor();
 });
 
