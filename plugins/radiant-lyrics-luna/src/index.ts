@@ -15,13 +15,16 @@ import {
 	type LyricsApiResponse,
 	type WordLine,
 	type WordTiming,
-	artworkTitleKey,
 	fetchLyrics as fetchLyricsApi,
 	flushLyrics as flushLyricsApi,
 	romanizeLyrics as romanizeLyricsApi,
 } from "./api";
 import { KawarpLayer } from "./backdrop";
-import { AnimatedArtworkLayer, ART_TILE_SELECTOR } from "./artwork";
+import {
+	AnimatedArtworkLayer,
+	ART_TILE_SELECTOR,
+	MINI_ART_SELECTOR,
+} from "./artwork";
 import { Settings, settings } from "./Settings";
 
 import backdropStylesCss from "file://backdrop-styles.css?minify";
@@ -835,14 +838,14 @@ const syncBackdropActivity = (): void => {
 		now,
 	);
 
-	// Only runs while the Now Playing view is visible. Guarded: this ticks 5x/second.
+	// Pause artwork videos whose cover is off screen. Guarded: this ticks 5x/second.
 	if (animatedArtworkLayer) {
 		if (!cachedNowPlayingPanel?.isConnected) {
 			cachedNowPlayingPanel = document.querySelector(
 				'[class*="_nowPlayingContainer"]',
 			) as HTMLElement | null;
 		}
-		animatedArtworkLayer.setNowPlayingVisible(
+		animatedArtworkLayer.syncVisibility(
 			!!cachedNowPlayingPanel && artPanelVisible(cachedNowPlayingPanel),
 		);
 	}
@@ -1102,63 +1105,38 @@ const updateRadiantLyricsBackdrop = function (): void {
 	}
 };
 
-// MARKER: Animated Artwork (live artwork on the artwork tile)
+// MARKER: Animated Artwork (live artwork on the artwork tiles)
 let animatedArtworkLayer: AnimatedArtworkLayer | null = null;
-let lastArtworkKey: string | null = null;
 let lastArtworkTile: Element | null = null;
+let lastMiniArtworkTile: Element | null = null;
+let artworkUpdateSeq = 0;
 
 /**
- * Request key for an animated-artwork lookup: album-scoped when an album is
- * present (skips within one are free). A result may still be scoped tighter —
- * see fetchAnimatedArtwork() — so skipping compares lastArtworkKey, the
- * effective scope, not this request key.
+ * Album-scoped request key for an animated-artwork lookup (skips within an
+ * album are free when the art was album-matched). Without an album it falls
+ * back to the title key, matching artworkTitleKey() in api.ts.
  */
 const artworkKey = (t: TrackInfo): string =>
 	t.album && t.album.trim() !== ""
 		? `${t.artist}\u0000${t.album.trim()}`
 		: `${t.artist}\u0000\u0000${t.title}`;
 
-// Load + show animated art for the current (or given) track
-const updateAnimatedArtwork = async (
-	target?: TrackInfo | null,
-	rehost = false,
-): Promise<void> => {
+// Load + show animated art for the playing track. Only the shared track-change
+// listener (and the setting) drive lookups; cover remounts just rebind.
+const updateAnimatedArtwork = async (): Promise<void> => {
+	const seq = ++artworkUpdateSeq;
 	if (!settings.animatedArtwork) {
 		animatedArtworkLayer?.dispose();
 		animatedArtworkLayer = null;
-		lastArtworkKey = null;
 		lastArtworkTile = null;
+		lastMiniArtworkTile = null;
 		return;
 	}
-	if (!animatedArtworkLayer) animatedArtworkLayer = new AnimatedArtworkLayer();
-	target ??= await getTrackInfo();
-	if (!target) return;
-	// Re-check after the await; another caller may have claimed this already.
-	if (!settings.animatedArtwork || !animatedArtworkLayer) return;
-	const key = artworkKey(target);
-	// Free skip: the shown artwork's scope covers this track — it was matched
-	// by album (album key), or it is the same track again (title key).
-	if (
-		key === lastArtworkKey ||
-		artworkTitleKey(target.artist, target.title) === lastArtworkKey
-	) {
-		// Same artwork, but the view may have remounted underneath us.
-		if (rehost) animatedArtworkLayer.reattach();
-		return;
-	}
-	lastArtworkKey = key;
-	const res = await animatedArtworkLayer.load(
-		key,
-		target.title,
-		target.artist,
-		target.album,
-		target.isrc,
-	);
-	// Adopt the effective scope — a title-matched result (or a miss) must not
-	// stand in for the album's other tracks — unless a newer trigger claimed.
-	if (lastArtworkKey === key) lastArtworkKey = res.key;
-	// No tile on screen yet; clear the key so the tile observer retries.
-	if (!res.done && lastArtworkKey === res.key) lastArtworkKey = null;
+	animatedArtworkLayer ??= new AnimatedArtworkLayer();
+	const target = await getTrackInfo();
+	// A newer track change won the race, or the setting flipped meanwhile.
+	if (seq !== artworkUpdateSeq || !target || !animatedArtworkLayer) return;
+	await animatedArtworkLayer.setTrack(target, artworkKey(target));
 };
 
 (window as any).updateAnimatedArtwork = updateAnimatedArtwork;
@@ -1542,13 +1520,19 @@ function setupLyricsMenuObserver(): void {
 		}
 	});
 
-	// The tile only exists once the view is open, so load from here too. This fires
-	// on nearly every DOM change, so bail synchronously unless the tile is new.
+	// Covers remount as views open and close: move the live artwork video onto
+	// the new element (no refetch). These fire on nearly every DOM change, so
+	// bail synchronously unless the cover is new.
 	observe<HTMLElement>(unloads, ART_TILE_SELECTOR, (tile) => {
 		// Identity only; also stops us reacting to our own <video> insertion.
 		if (tile === lastArtworkTile) return;
 		lastArtworkTile = tile;
-		void updateAnimatedArtwork(undefined, true);
+		animatedArtworkLayer?.rebind();
+	});
+	observe<HTMLElement>(unloads, MINI_ART_SELECTOR, (tile) => {
+		if (tile === lastMiniArtworkTile) return;
+		lastMiniArtworkTile = tile;
+		animatedArtworkLayer?.rebind();
 	});
 
 	// Apply word lyrics when lyrics container appears or reappears
