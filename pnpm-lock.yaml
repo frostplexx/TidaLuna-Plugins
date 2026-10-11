@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      hls.js:
-        specifier: ^1.7.2
-        version: 1.7.2
     devDependencies:
       '@types/node':
         specifier: ^22.15.29
