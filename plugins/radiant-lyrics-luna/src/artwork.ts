@@ -29,7 +29,8 @@ export class AnimatedArtworkLayer {
 	private artwork: { url: string; url_tall: string } | null = null;
 	/**
 	 * Scope key of the displayed artwork (see fetchAnimatedArtwork): the album
-	 * key only when the answer was matched by album, else the title key.
+	 * key only when the answer was matched by album (name or ISRC), else the
+	 * title key.
 	 */
 	private artworkKey: string | null = null;
 	private liveSrc: string | null = null;
@@ -121,6 +122,7 @@ export class AnimatedArtworkLayer {
 		title: string,
 		artist: string,
 		album: string | undefined,
+		isrc?: string,
 	): Promise<{ done: boolean; key: string }> {
 		// Already showing artwork that covers this track (album-matched, or the
 		// same track again) — keep playing, touch nothing.
@@ -143,7 +145,13 @@ export class AnimatedArtworkLayer {
 		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR))
 			return { done: false, key };
 
-		const lookup = await fetchAnimatedArtwork(title, artist, album, signal);
+		const lookup = await fetchAnimatedArtwork(
+			title,
+			artist,
+			album,
+			isrc,
+			signal,
+		);
 		if (token !== this.loadToken) return { done: true, key: lookup.key };
 		if (!this.tileAlive()) return { done: false, key: lookup.key };
 
