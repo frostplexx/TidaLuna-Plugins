@@ -17,6 +17,8 @@ const REPLACED_TAGS = new Set(["IMG", "PICTURE", "VIDEO", "CANVAS", "SVG"]);
 // Keeps ABR off Apple's 2160x2160 rung (91MB a loop). Bandwidth only, not CPU.
 const ART_MAX_DPR = 1;
 const ART_NATIVE_FPS = 25;
+/** Fade duration: the 0.3s opacity transition, plus a small margin. */
+const ART_FADE_MS = 350;
 
 export class AnimatedArtworkLayer {
 	private video: HTMLVideoElement | null = null;
@@ -148,10 +150,10 @@ export class AnimatedArtworkLayer {
 		if (!document.querySelector<HTMLElement>(ART_TILE_SELECTOR))
 			return { done: false, key };
 
-		// The shown artwork doesn't cover this track: drop the stale video
-		// right away instead of playing the previous track's art over the
-		// (already swapped-in) static cover while the lookup runs.
-		this.detach(false);
+		// The shown artwork doesn't cover this track: fade the stale video
+		// out over the (already swapped-in) static cover instead of playing
+		// the previous track's art at full opacity while the lookup runs.
+		this.detach(false, true);
 
 		const lookup = await fetchAnimatedArtwork(
 			title,
@@ -273,7 +275,16 @@ export class AnimatedArtworkLayer {
 			this.detach(false);
 			return;
 		}
-		video.classList.add("rl-animated-art-visible");
+		// Fade in: the visible class must land after the browser has seen
+		// the opacity-0 state (two frames), or the transition never runs
+		// and the video pops in instead of fading over the static cover.
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				if (this.video === video && this.tile?.isConnected) {
+					video.classList.add("rl-animated-art-visible");
+				}
+			}),
+		);
 		this.applyRate();
 		this.ensurePlaying();
 	}
@@ -289,7 +300,7 @@ export class AnimatedArtworkLayer {
 
 	private fail = (reason: string): void => {
 		trace.log(`AM Artwork: ${reason} — hiding video (src: ${this.liveSrc})`);
-		this.detach(false);
+		this.detach(false, true);
 	};
 
 	ensurePlaying(): void {
@@ -326,8 +337,8 @@ export class AnimatedArtworkLayer {
 		}
 	}
 
-	private detach(keepData: boolean): void {
-		if (this.video?.parentNode) this.video.remove();
+	private detach(keepData: boolean, fade = false): void {
+		const video = this.video;
 		this.video = null;
 		this.hls?.destroy();
 		this.hls = null;
@@ -335,6 +346,20 @@ export class AnimatedArtworkLayer {
 		if (!keepData) {
 			this.artwork = null;
 			this.artworkKey = null;
+		}
+		if (!video) return;
+		if (fade && video.parentNode) {
+			// Fade out over the tile's static cover first, then drop the
+			// element once the 0.3s opacity transition has finished. The
+			// layer forgets the element immediately, so a replacement video
+			// can mount underneath while this one fades.
+			video.classList.remove("rl-animated-art-visible");
+			setTimeout(() => {
+				video.pause();
+				video.remove();
+			}, ART_FADE_MS);
+		} else {
+			video.remove();
 		}
 	}
 
