@@ -61,34 +61,87 @@
 	}
 }
 
-/* Flush button tooltip (native title is unreliable) */
-.flush-lyrics-button {
-	position: relative !important;
-}
-
-.flush-lyrics-button::after {
-	content: attr(data-tip);
+/* Rainbow flush button in Sylla retime mode */
+.rl-retime-defs {
 	position: absolute;
-	top: calc(100% + 6px);
-	right: 0;
-	padding: 4px 8px;
-	border-radius: 4px;
-	background: rgba(0, 0, 0, 0.85);
-	color: #fff;
-	font-size: 12px;
-	font-weight: 500;
-	line-height: 1.3;
-	white-space: nowrap;
+	width: 0;
+	height: 0;
+	overflow: hidden;
 	pointer-events: none;
-	z-index: 10000;
-	opacity: 0;
-	transform: translateY(-2px);
-	transition: opacity 0.12s ease, transform 0.12s ease;
 }
 
-.flush-lyrics-button:hover::after {
-	opacity: 1;
-	transform: translateY(0);
+.rl-retime-defs,
+.flush-lyrics-button.rl-retime {
+	--rl-ai-c1: #ff6b9d;
+	--rl-ai-c2: #ffd166;
+	--rl-ai-c3: #5ee7ff;
+	--rl-ai-c4: #a78bfa;
+	--rl-ai-glow: 60%;
+}
+
+.rl-retime-stop {
+	animation: rl-ai-flow 6s linear infinite;
+}
+
+.rl-retime-stop:nth-child(1) {
+	stop-color: var(--rl-ai-c1);
+}
+
+.rl-retime-stop:nth-child(2) {
+	stop-color: var(--rl-ai-c2);
+	animation-delay: -1.5s;
+}
+
+.rl-retime-stop:nth-child(3) {
+	stop-color: var(--rl-ai-c3);
+	animation-delay: -3s;
+}
+
+.rl-retime-stop:nth-child(4) {
+	stop-color: var(--rl-ai-c4);
+	animation-delay: -4.5s;
+}
+
+/* Sprite icon fill, colour cycle as a fallback */
+.flush-lyrics-button.rl-retime svg {
+	fill: url(#rl-retime-gradient);
+	animation: rl-ai-glow 6s linear infinite, rl-retime-color 6s linear infinite;
+}
+
+.flush-lyrics-button.rl-retime svg.rl-spinner {
+	animation: rl-spinner-rotate 0.9s linear infinite, rl-ai-glow 6s linear infinite;
+}
+
+.flush-lyrics-button.rl-retime svg.rl-spinner circle {
+	stroke: url(#rl-retime-gradient) !important;
+}
+
+/* Retiming is busy not disabled, so no dimming */
+.flush-lyrics-button.rl-retime:disabled {
+	opacity: 1 !important;
+}
+
+@keyframes rl-retime-color {
+	0%,
+	100% {
+		color: var(--rl-ai-c1);
+	}
+	25% {
+		color: var(--rl-ai-c2);
+	}
+	50% {
+		color: var(--rl-ai-c3);
+	}
+	75% {
+		color: var(--rl-ai-c4);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.flush-lyrics-button.rl-retime svg,
+	.rl-retime-stop {
+		animation: none;
+	}
 }
 
 [data-test="toggle-lyrics"]:has(.rl-lyrics-menu-trigger) {
@@ -277,6 +330,11 @@ body.rl-dropdown-open [data-test="toggle-lyrics"] {
 	gap: 10px;
 }
 
+/* Hide AI rows when AI is off (flex beats [hidden]) */
+.rl-lyrics-menu-row[hidden] {
+	display: none;
+}
+
 /* Breathing room between stacked rows */
 .rl-lyrics-menu-row + .rl-lyrics-menu-row {
 	margin-top: 8px;
@@ -336,6 +394,29 @@ body.rl-dropdown-open [data-test="toggle-lyrics"] {
 .rl-lyrics-menu-switch input:checked + .rl-lyrics-menu-slider::before {
 	transform: translateX(16px);
 	background-color: rgb(255, 255, 255);
+}
+
+/* Dropdown (translation language) */
+.rl-lyrics-menu-select {
+	flex-shrink: 0;
+	border: none;
+	border-radius: 8px;
+	padding: 3px 6px;
+	background: rgba(0, 0, 0, 0.06);
+	color: rgba(0, 0, 0, 0.8);
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+	outline: none;
+}
+
+/* Language row is just the dropdown, full width */
+.rl-language-row .rl-lyrics-menu-select {
+	flex: 1;
+}
+
+.rl-lyrics-menu-select:hover {
+	background: rgba(0, 0, 0, 0.1);
 }
 
 /* Segmented control (Line | Word | Syllable) */
@@ -890,6 +971,31 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 	transition:
 		max-height 0.5s ease,
 		opacity 0.5s ease;
+}
+
+/* Translation above the line (like the adlib container) */
+.rl-wbw-translation {
+	max-height: 0;
+	overflow: visible;
+	opacity: 0;
+	font-size: 0.55em;
+	padding-bottom: 0.15em;
+	transition:
+		max-height 0.3s ease,
+		opacity 0.5s ease;
+	color: rgba(255, 255, 255, 0.4);
+}
+
+.rl-wbw-line.rl-wbw-line-active .rl-wbw-translation {
+	max-height: 3em;
+	opacity: 1;
+	transition:
+		max-height 0.5s ease,
+		opacity 0.5s ease;
+}
+
+.rl-dual-side .rl-wbw-line.rl-singer-right .rl-wbw-translation {
+	text-align: end;
 }
 
 /* Singer duet positioning */
