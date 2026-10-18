@@ -1844,6 +1844,48 @@ const trackHasNativeLyrics = (trackId: string): boolean => {
 	return Array.isArray(rel) && rel.length > 0;
 };
 
+// TIDAL's own synced lyrics (from redux, not the DOM) as rl-api Line shape
+// Used as Sylla Align input when RL API has nothing
+const getNativeTidalLineLyrics = (trackInfo: TrackInfo): LyricsApiResponse | null => {
+	const rel = getNativeTrackEntity(trackInfo.trackId)?.relationships?.lyrics?.data;
+	const lyricsId = Array.isArray(rel) ? rel[0]?.id : undefined;
+	if (!lyricsId) return null;
+	const attrs = getReduxState(true)?.entities?.lyrics?.entities?.[lyricsId]?.attributes;
+	const lrc: unknown = attrs?.lrcText;
+	if (typeof lrc !== "string" || !lrc.trim()) return null;
+
+	const timed: Array<{ start: number; text: string }> = [];
+	for (const raw of lrc.split(/\r?\n/)) {
+		const m = raw.match(/^\s*\[(\d+):(\d+(?:\.\d+)?)\](.*)$/);
+		if (!m) continue;
+		timed.push({ start: Number(m[1]) * 60 + Number(m[2]), text: m[3].trim() });
+	}
+	const data: ApiLine[] = [];
+	timed.forEach((line, i) => {
+		if (!line.text) return;
+		const end = timed[i + 1]?.start ?? line.start + 5;
+		data.push({
+			text: line.text,
+			startTime: line.start,
+			duration: Math.max(0, Math.round((end - line.start) * 1000) / 1000),
+			endTime: end,
+			element: { key: `L${data.length + 1}`, singer: "v1" },
+		});
+	});
+	if (data.length === 0) return null;
+
+	const last = data[data.length - 1];
+	return {
+		type: "Line",
+		data,
+		metadata: {
+			title: trackInfo.title,
+			language: "",
+			totalDuration: String(last.endTime),
+		},
+	};
+};
+
 const currentTrackWantsLyricsPanel = (): boolean =>
 	(getReduxState()?.settings?.nowPlayingActiveView ?? null) === "lyrics";
 
@@ -4402,7 +4444,13 @@ const onTrackChange = async (): Promise<void> => {
 		if (token !== trackChangeToken) return;
 		if (!response) {
 			trace.log("RL API: no API lyrics available, falling back to TIDAL lines");
-			if (!autoSylla(trackInfo, "gen")) disableFlushNoLyrics();
+			// TIDAL has synced lines: Sylla aligns those, else it generates from scratch
+			const tidalSource = getNativeTidalLineLyrics(trackInfo);
+			if (tidalSource) sylTrace(`Sylla: using ${tidalSource.data.length} TIDAL lines as align input`);
+			const started = tidalSource
+				? autoSylla(trackInfo, "align", tidalSource)
+				: autoSylla(trackInfo, "gen");
+			if (!started) disableFlushNoLyrics();
 			const tidalTexts = getTidalLines();
 			const romanized = settings.romanizeLyrics
 				? await romanizeLyrics(tidalTexts)
