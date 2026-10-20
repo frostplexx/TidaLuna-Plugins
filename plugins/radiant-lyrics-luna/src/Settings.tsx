@@ -1,5 +1,11 @@
 import { ReactiveStore } from "@luna/core";
-import { LunaSettings, LunaSwitchSetting, LunaNumberSetting } from "@luna/ui";
+import {
+	LunaSettings,
+	LunaSwitchSetting,
+	LunaNumberSetting,
+	LunaSelectSetting,
+	LunaSelectItem,
+} from "@luna/ui";
 import React from "react";
 
 declare global {
@@ -16,10 +22,28 @@ declare global {
 		updateLyricsStyleSetting?: (value: number) => void;
 		updateRomanizeLyrics?: () => void;
 		updateRomanizeLyricsSetting?: (checked: boolean) => void;
-		updateAiSyllables?: () => void;
-		updateAiSyllablesSetting?: (checked: boolean) => void;
+		updateTranslateLyrics?: () => void;
+		updateTranslateLyricsSetting?: (checked: boolean) => void;
+		updateTranslateLanguageSetting?: (value: string) => void;
+		updateAllowAI?: () => void;
+		updateRadiantAI?: () => void;
+		updateRadiantAISetting?: (checked: boolean) => void;
 	}
 }
+
+// Translation languages (value goes to ?language=)
+export const TRANSLATE_LANGUAGES = [
+	{ value: "english", label: "English" },
+	{ value: "spanish", label: "Spanish" },
+	{ value: "french", label: "French" },
+	{ value: "german", label: "German" },
+	{ value: "portuguese", label: "Portuguese" },
+	{ value: "italian", label: "Italian" },
+	{ value: "russian", label: "Russian" },
+	{ value: "japanese", label: "Japanese" },
+	{ value: "korean", label: "Korean" },
+	{ value: "chinese", label: "Chinese" },
+] as const;
 
 export const settings = await ReactiveStore.getPluginStorage("RadiantLyrics", {
 	lyricsGlowEnabled: true,
@@ -30,8 +54,14 @@ export const settings = await ReactiveStore.getPluginStorage("RadiantLyrics", {
 	contextAwareLyrics: true,
 	bubbledLyrics: true,
 	romanizeLyrics: false,
-	aiSyllables: false,
-	syllableStyle: 0, // MARKER: Syllable animations SETTINGS (WIP coming soon)
+	translateLyrics: false,
+	// Sent as ?language=, see TRANSLATE_LANGUAGES
+	translateLanguage: "english",
+	// Off hides all AI stuff and skips AI lyrics
+	allowAI: true,
+	// Sylla makes missing lyrics & retimes Line lyrics (needs allowAI)
+	radiantAI: false,
+	syllableStyle: 0, // MARKER: Syllable animations SETTINGS (WIP coming uhh.. later)
 	syllableLogging: false,
 	// Playback clock calibration in ms (i assume Lunar will break playback one day since MPV is wierd so i added this for that)
 	lyricsOffsetMs: 0,
@@ -195,14 +225,35 @@ export const Settings = () => {
 			window.updateRomanizeLyricsSetting = undefined;
 		};
 	}, []);
-	const [aiSyllables, setAiSyllables] = React.useState(
-		settings.aiSyllables,
+	const [translateLyrics, setTranslateLyrics] = React.useState(
+		settings.translateLyrics,
 	);
 	React.useEffect(() => {
-		window.updateAiSyllablesSetting = (checked: boolean) =>
-			setAiSyllables(checked);
+		window.updateTranslateLyricsSetting = (checked: boolean) =>
+			setTranslateLyrics(checked);
 		return () => {
-			window.updateAiSyllablesSetting = undefined;
+			window.updateTranslateLyricsSetting = undefined;
+		};
+	}, []);
+	const [translateLanguage, setTranslateLanguage] = React.useState(
+		settings.translateLanguage,
+	);
+	React.useEffect(() => {
+		window.updateTranslateLanguageSetting = (value: string) =>
+			setTranslateLanguage(value);
+		return () => {
+			window.updateTranslateLanguageSetting = undefined;
+		};
+	}, []);
+	const [allowAI, setAllowAI] = React.useState(settings.allowAI);
+	const [radiantAI, setRadiantAI] = React.useState(
+		settings.radiantAI,
+	);
+	React.useEffect(() => {
+		window.updateRadiantAISetting = (checked: boolean) =>
+			setRadiantAI(checked);
+		return () => {
+			window.updateRadiantAISetting = undefined;
 		};
 	}, []);
 
@@ -221,6 +272,32 @@ export const Settings = () => {
 
 	return (
 		<LunaSettings>
+			<AnySwitch
+				title="AI Features"
+				desc="Sylla lyric generation & retiming. Off hides them and the API skips AI generated lyrics"
+				checked={allowAI}
+				onChange={(_: unknown, checked: boolean) => {
+					settings.allowAI = checked;
+					setAllowAI(checked);
+					if (window.updateAllowAI) {
+						window.updateAllowAI();
+					}
+				}}
+			/>
+			{allowAI && (
+				<AnySwitch
+					title="Radiant AI"
+					desc="Generates and Re-times lyrics with Sylla AI"
+					checked={radiantAI}
+					onChange={(_: unknown, checked: boolean) => {
+						settings.radiantAI = checked;
+						setRadiantAI(checked);
+						if (window.updateRadiantAI) {
+							window.updateRadiantAI();
+						}
+					}}
+				/>
+			)}
 			<AnySwitch
 				title="Lyrics Glow Effect"
 				desc="Enable glowing effect on lyrics"
@@ -331,17 +408,36 @@ export const Settings = () => {
 				}}
 			/>
 			<AnySwitch
-				title="WIP | AI Generated Syllables"
-				desc="Radiant AI generates word & syllable timings from the Line timings"
-				checked={aiSyllables}
+				title="Translate Lyrics"
+				desc="Display a translation above each lyric line"
+				checked={translateLyrics}
 				onChange={(_: unknown, checked: boolean) => {
-					settings.aiSyllables = checked;
-					setAiSyllables(checked);
-					if (window.updateAiSyllables) {
-						window.updateAiSyllables();
+					settings.translateLyrics = checked;
+					setTranslateLyrics(checked);
+					if (window.updateTranslateLyrics) {
+						window.updateTranslateLyrics();
 					}
 				}}
 			/>
+			<LunaSelectSetting
+				title="Translation Language"
+				desc="Language lyrics are translated into"
+				value={translateLanguage}
+				onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+					const v = e.target.value;
+					settings.translateLanguage = v;
+					setTranslateLanguage(v);
+					if (window.updateTranslateLyrics) {
+						window.updateTranslateLyrics();
+					}
+				}}
+			>
+				{TRANSLATE_LANGUAGES.map((l) => (
+					<LunaSelectItem key={l.value} value={l.value}>
+						{l.label}
+					</LunaSelectItem>
+				))}
+			</LunaSelectSetting>
 			<AnySwitch
 				title="Hide UI Feature"
 				desc="Enable hide/unhide UI functionality with toggle buttons"

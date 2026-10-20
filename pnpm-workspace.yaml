@@ -1,5 +1,7 @@
 packages:
  - "plugins/*"
+ # Local dev helpers (gitignored)
+ - "!plugins/devtools-luna"
 
 # pnpm 11 renamed `onlyBuiltDependencies` (list) to `allowBuilds` (map of name -> bool).
 # This whitelists postinstall/build scripts non-interactively in CI.

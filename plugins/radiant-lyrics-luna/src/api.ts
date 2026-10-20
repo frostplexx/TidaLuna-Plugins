@@ -43,13 +43,16 @@ function query(
 	title: string,
 	artist: string,
 	isrc: string | undefined,
-	options?: { romanize?: boolean; flush?: boolean; synthesize?: boolean },
+	options?: { romanize?: boolean; flush?: boolean },
 ): string {
 	let q = `?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`;
 	if (isrc) q += `&isrc=${encodeURIComponent(isrc)}`;
 	if (options?.romanize) q += "&romanize=true";
 	if (options?.flush) q += "&flush=true";
-	if (options?.synthesize) q += "&synthesize=true";
+	q += `&ai-preference=${settings.allowAI}`;
+	if (settings.translateLyrics) {
+		q += `&translate=true&language=${encodeURIComponent(settings.translateLanguage)}`;
+	}
 	q += `&${platformQs}`;
 	return q;
 }
@@ -66,6 +69,13 @@ export interface WordTiming {
 	confidence?: number;
 }
 
+// Translated word, timed to its source syllable (not in order)
+export interface TranslationWord {
+	text: string;
+	time: number;
+	duration: number;
+}
+
 export interface WordLine {
 	text: string;
 	startTime: number;
@@ -79,6 +89,8 @@ export interface WordLine {
 		singer: string;
 	};
 	translation: string | null;
+	translationTiming?: "aligned" | "estimated";
+	translationSyllabus?: TranslationWord[];
 	romanized?: string;
 }
 
@@ -109,9 +121,15 @@ export interface WordLyricsResponse {
 		songParts?: Array<{ name: string; time: number; duration: number }>;
 	};
 	_cached?: boolean;
-	// Timings came from Radiant AI
+	// Came from an AI record (missing = false)
 	_synthesized?: boolean;
-	// Original lines, so AI can be turned off without refetch
+	// Align = retimed, Generate = transcribed, Synthesize = old guessed timings
+	_synthesisType?: "Align" | "Generate" | "Synthesize";
+	_model?: string;
+	_modelVersion?: string;
+	_confidence?: number;
+	_synthesisId?: string;
+	// Original provider lines (none if Generate had none)
 	lines?: ApiLine[];
 }
 
@@ -128,7 +146,18 @@ export interface LineLyricsResponse {
 	_cached?: boolean;
 }
 
-export type LyricsApiResponse = WordLyricsResponse | LineLyricsResponse;
+// Flags the API adds for romanize / translate
+interface LyricsTextFlags {
+	_romanized?: boolean;
+	// false if translation failed, lyrics still come back
+	_translated?: boolean;
+	_translationLanguage?: string;
+	// only when _translated is false
+	_translationError?: string;
+}
+
+export type LyricsApiResponse = (WordLyricsResponse | LineLyricsResponse) &
+	LyricsTextFlags;
 
 type FetchOutcome =
 	| { status: "ok"; data: LyricsApiResponse | null }
@@ -142,9 +171,8 @@ export async function fetchLyrics(
 	artist: string,
 	isrc: string | undefined,
 	romanize: boolean,
-	synthesize = false,
 ): Promise<LyricsApiResponse | null> {
-	const params = query(title, artist, isrc, { romanize, synthesize });
+	const params = query(title, artist, isrc, { romanize });
 	const atomixUrl = `https://api.atomix.one/rl-api${params}`;
 	const fallbackUrl = `https://rl-api.kineticsand.net/lyrics${params}`;
 
@@ -347,6 +375,169 @@ export async function flushLyrics(track: {
 	return { ok: true, data };
 }
 
+// MARKER: Sylla (AI retiming + generation)
+
+export interface AlignLineSummary {
+	index: number;
+	text: string;
+	begin: number;
+	end: number;
+	confidence: number;
+	sung: boolean;
+	kept_input?: boolean;
+	shift_ms?: number;
+}
+
+export interface AlignResponse {
+	// "aligned" when it worked, otherwise why it failed
+	verdict?: string;
+	message?: string;
+	tidal_id: string;
+	isrc: string;
+	title: string;
+	artist: string;
+	// 0..1 alignment confidence
+	confidence: number;
+	lyrics: WordLyricsResponse;
+	ttml: string;
+	lines: AlignLineSummary[];
+	removed_lines?: Array<{ index: number; text: string; reason: string }>;
+	stats: Record<string, unknown>;
+	model: string;
+	// sylla-gen only
+	lyrics_source?: string;
+	transcript?: { language: string; text: string; confidence: number; lines: number };
+}
+
+// 409 from sylla-align: already Sylla lyrics, nothing queued
+export interface SyllaAlreadyAligned {
+	job?: string;
+	jobType?: string;
+	confidence?: number;
+}
+
+type SyllaResult =
+	| { ok: true; data: AlignResponse }
+	| {
+			ok: false;
+			status: number;
+			detail: string;
+			verdict?: string;
+			alreadyAligned?: SyllaAlreadyAligned;
+		};
+
+// Query flags for sylla-align / sylla-gen
+const syllaQs = (): string =>
+	`?romanize=${settings.romanizeLyrics}&translate=${settings.translateLyrics}&language=${encodeURIComponent(settings.translateLanguage)}&ai-preference=${settings.allowAI}`;
+
+// Retime lyrics
+export function alignLyrics(
+	track: { trackId: string; title: string; artist: string; isrc?: string },
+	lyrics: LyricsApiResponse,
+): Promise<SyllaResult> {
+	return postSylla(`sylla-align${syllaQs()}`, "Sylla Align", {
+		tidal_id: track.trackId,
+		// Just the rl-api shape, not our own flags
+		lyrics: { type: lyrics.type, data: lyrics.data, metadata: lyrics.metadata },
+		isrc: track.isrc ?? "",
+		title: track.title,
+		artist: track.artist,
+	});
+}
+
+// Make lyrics (takes longer..)
+export function generateLyrics(
+	track: {
+		trackId: string;
+		title: string;
+		artist: string;
+		isrc?: string;
+	},
+): Promise<SyllaResult> {
+	return postSylla(`sylla-gen${syllaQs()}`, "Sylla Gen", {
+		tidal_id: track.trackId,
+		isrc: track.isrc ?? "",
+		title: track.title,
+		artist: track.artist,
+	});
+}
+
+async function postSylla(
+	endpoint: string,
+	label: string,
+	body: unknown,
+): Promise<SyllaResult> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 180000);
+	try {
+		const res = await fetch(`https://api.atomix.one/${endpoint}`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...(await auth()) },
+			body: JSON.stringify(body),
+			signal: controller.signal,
+		});
+		if (!res.ok) {
+			// 422 from sylla-gen has verdict + message, others just detail
+			let detail = "";
+			let verdict: string | undefined;
+			try {
+				const body = (await res.json()) as {
+					detail?: unknown;
+					message?: unknown;
+					verdict?: unknown;
+				};
+				if (typeof body?.message === "string") detail = body.message;
+				else if (typeof body?.detail === "string") detail = body.detail;
+				if (typeof body?.verdict === "string") verdict = body.verdict;
+				// Already Sylla lyrics (not a fail)
+				const d = body?.detail as
+					| ({ error?: unknown; message?: unknown } & SyllaAlreadyAligned)
+					| undefined;
+				if (res.status === 409 && d?.error === "already_aligned") {
+					sylTrace(`${label}: already aligned (${d.job}, conf ${d.confidence})`);
+					return {
+						ok: false,
+						status: 409,
+						detail: typeof d.message === "string" ? d.message : "already aligned",
+						verdict: "already_aligned",
+						alreadyAligned: { job: d.job, jobType: d.jobType, confidence: d.confidence },
+					};
+				}
+			} catch {}
+			trace.log(
+				`${label}: request failed ${res.status}${verdict ? ` (${verdict})` : ""}${detail ? ` | ${detail}` : ""}`,
+			);
+			return { ok: false, status: res.status, detail: detail || verdict || "", verdict };
+		}
+		const data = (await res.json()) as AlignResponse;
+		// Different version of the song (nothing changed so skip)
+		if (data?.verdict === "lyrics_do_not_match_audio") {
+			trace.log(`${label}: lyrics do not match the audio`);
+			return {
+				ok: false,
+				status: res.status,
+				detail: data.message || "lyrics don't match this version of the song",
+				verdict: data.verdict,
+			};
+		}
+		if (data?.lyrics?.type !== "Word" || !Array.isArray(data.lyrics.data)) {
+			trace.log(`${label}: response had no usable lyrics`);
+			return { ok: false, status: res.status, detail: "invalid response" };
+		}
+		sylTrace(
+			`${label}: ${data.model} verdict=${data.verdict} conf=${data.confidence}`,
+			data.stats,
+		);
+		return { ok: true, data };
+	} catch (err) {
+		const timedOut = err instanceof DOMException && err.name === "AbortError";
+		trace.log(`${label}: request ${timedOut ? "timed out" : `error | ${err}`}`);
+		return { ok: false, status: 0, detail: timedOut ? "timed out" : String(err) };
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 // Romanize
 export async function romanizeLyrics(
 	lineTexts: string[],
@@ -363,6 +554,24 @@ export async function romanizeLyrics(
 		})),
 	};
 
+	const data = await postRomanize(payload, 5000);
+	if (!data) return null;
+	return lineTexts.map((original, idx) => {
+		const item = data[idx];
+		return item?.romanized ?? item?.text ?? original;
+	});
+}
+
+type RomanizedItem = {
+	text?: string;
+	romanized?: string;
+	syllabus?: Array<{ text?: string; romanized?: string }>;
+};
+
+async function postRomanize(
+	payload: unknown,
+	timeoutMs: number,
+): Promise<RomanizedItem[] | null> {
 	const romanizeQuery = `?${platformQs}`;
 	const urls: { url: string; useAtomixAuth: boolean }[] = [
 		{
@@ -377,7 +586,7 @@ export async function romanizeLyrics(
 
 	for (const { url, useAtomixAuth } of urls) {
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 5000);
+		const timeout = setTimeout(() => controller.abort(), timeoutMs);
 		try {
 			const romanizeHeaders: Record<string, string> = {
 				"content-type": "application/json",
@@ -397,16 +606,9 @@ export async function romanizeLyrics(
 				continue;
 			}
 
-			const data = (await res.json()) as {
-				type?: string;
-				data?: Array<{ text?: string; romanized?: string }>;
-			};
+			const data = (await res.json()) as { type?: string; data?: RomanizedItem[] };
 			if (!Array.isArray(data?.data)) continue;
-
-			return lineTexts.map((original, idx) => {
-				const item = data.data?.[idx];
-				return item?.romanized ?? item?.text ?? original;
-			});
+			return data.data;
 		} catch (err) {
 			clearTimeout(timeout);
 			if (err instanceof DOMException && err.name === "AbortError") {

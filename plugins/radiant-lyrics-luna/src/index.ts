@@ -11,12 +11,15 @@ import {
 } from "@luna/lib";
 import {
 	type ApiLine,
-	type LineLyricsResponse,
 	type LyricsApiResponse,
 	type WordLine,
 	type WordTiming,
+	alignLyrics as alignLyricsApi,
+	type AlignResponse,
+	type SyllaAlreadyAligned,
 	fetchLyrics as fetchLyricsApi,
 	flushLyrics as flushLyricsApi,
+	generateLyrics as generateLyricsApi,
 	romanizeLyrics as romanizeLyricsApi,
 } from "./api";
 import { KawarpLayer } from "./backdrop";
@@ -25,7 +28,7 @@ import {
 	ART_TILE_SELECTOR,
 	MINI_ART_SELECTOR,
 } from "./artwork";
-import { Settings, settings } from "./Settings";
+import { Settings, TRANSLATE_LANGUAGES, settings } from "./Settings";
 
 import backdropStylesCss from "file://backdrop-styles.css?minify";
 import coverEverywhereCss from "file://cover-everywhere.css?minify";
@@ -58,6 +61,15 @@ const romanizedText = (
 ): string =>
 	(settings.romanizeLyrics && item.romanized ? item.romanized : item.text) ??
 	fallback;
+
+// Hide translations that just repeat the line
+const lettersOnly = (s: string): string =>
+	s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+const needsTranslation = (line: {
+	text: string;
+	translation?: string | null;
+}): line is { text: string; translation: string } =>
+	!!line.translation && lettersOnly(line.translation) !== lettersOnly(line.text);
 
 // MARKER: Player Market UI (Ensure new UI is enabled)
 
@@ -542,6 +554,38 @@ const toggleRadiantLyrics = function (): void {
 // Create buttons
 let flushLocked = false;
 let flushSpinning = false;
+// Flushed track.. next click retimes it with AI
+let retimeTrackId: string | null = null;
+let retiming = false;
+// Bumped on track change so old Sylla results get dropped
+let syllaEpoch = 0;
+// Track that already ran auto Sylla (so rebuilds don't requeue)
+let autoSyllaTrackId: string | null = null;
+let autoSyllaRunning = false;
+
+const setFlushTip = (tip: string): void => {
+	const btn = document.querySelector(".flush-lyrics-button");
+	btn?.setAttribute("title", tip);
+	btn?.setAttribute("aria-label", tip);
+};
+const flushIdleTip = (): string =>
+	retimeTrackId ? "Retime Lyrics using Sylla!" : "Flush Lyrics";
+
+// Rainbow flush button in retime mode
+const syncRetimeStyle = (): void => {
+	const btn = document.querySelector(".flush-lyrics-button");
+	if (!btn) return;
+	if (!document.getElementById("rl-retime-gradient")) {
+		const defs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		defs.setAttribute("class", "rl-retime-defs");
+		defs.setAttribute("aria-hidden", "true");
+		defs.innerHTML =
+			'<defs><linearGradient id="rl-retime-gradient" x1="0" y1="1" x2="1" y2="0"><stop class="rl-retime-stop" offset="0"/><stop class="rl-retime-stop" offset="0.35"/><stop class="rl-retime-stop" offset="0.65"/><stop class="rl-retime-stop" offset="1"/></linearGradient></defs>';
+		document.body.appendChild(defs);
+	}
+	btn.classList.toggle("rl-retime", retiming || (!flushLocked && retimeTrackId !== null));
+};
+unloads.add(() => document.querySelector(".rl-retime-defs")?.remove());
 
 // Swap flush icon and loading spinner
 const setFlushSpinner = (on: boolean): void => {
@@ -555,7 +599,7 @@ const setFlushSpinner = (on: boolean): void => {
 		.filter((c) => c && c !== "rl-spinner");
 	if (on) {
 		if (svg.classList.contains("rl-spinner")) return;
-		btn.setAttribute("data-tip", "Loading lyrics…");
+		btn.setAttribute("title", "Loading lyrics…");
 		btn.setAttribute("aria-label", "Loading lyrics…");
 		const spinner = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 		if (svgClass.length) spinner.setAttribute("class", svgClass.join(" "));
@@ -593,9 +637,9 @@ const unlockFlush = (): void => {
 		btn.disabled = false;
 		btn.style.opacity = "";
 		btn.style.cursor = "";
-		btn.setAttribute("data-tip", "Flush Lyrics");
-		btn.setAttribute("aria-label", "Flush Lyrics");
+		setFlushTip(flushIdleTip());
 	}
+	syncRetimeStyle();
 };
 const lockFlush = (): void => {
 	flushLocked = true;
@@ -606,6 +650,7 @@ const lockFlush = (): void => {
 		btn.style.cursor = "not-allowed";
 	}
 	setFlushSpinner(true);
+	syncRetimeStyle();
 };
 const disableFlushNoLyrics = (): void => {
 	flushLocked = true;
@@ -615,9 +660,10 @@ const disableFlushNoLyrics = (): void => {
 		btn.disabled = true;
 		btn.style.opacity = "0.3";
 		btn.style.cursor = "not-allowed";
-		btn.setAttribute("data-tip", "Track has no lyrics");
+		btn.setAttribute("title", "Track has no lyrics");
 		btn.setAttribute("aria-label", "Track has no lyrics");
 	}
+	syncRetimeStyle();
 };
 
 const flushLyrics = async (): Promise<void> => {
@@ -626,6 +672,10 @@ const flushLyrics = async (): Promise<void> => {
 	const trackInfo = await getTrackInfo();
 	if (!trackInfo) {
 		trace.msg.err("Flush: could not get track info");
+		return;
+	}
+	if (retimeTrackId === trackInfo.trackId) {
+		await retimeLyrics(trackInfo);
 		return;
 	}
 
@@ -645,6 +695,7 @@ const flushLyrics = async (): Promise<void> => {
 		}
 		const data = result.data;
 		const note = data?._flush ?? "";
+		if (settings.allowAI) retimeTrackId = trackInfo.trackId;
 
 		const needsReload = note.startsWith("Created") || note.startsWith("Updated");
 		if (note) {
@@ -665,6 +716,105 @@ const flushLyrics = async (): Promise<void> => {
 	}
 };
 
+const alreadyAlignedMsg = (info: SyllaAlreadyAligned): string =>
+	`Already timed by Sylla${info.confidence !== undefined ? ` (${Math.round(info.confidence * 100)}% confidence)` : ""}`;
+
+// Second click after a flush (Sylla retime)
+const retimeLyrics = async (trackInfo: TrackInfo): Promise<void> => {
+	const current = lyricsResponse ?? cachedLyricsData;
+	if (!current) {
+		toast("No lyrics to retime");
+		return;
+	}
+
+	retiming = true;
+	lockFlush();
+	setFlushTip("Retiming with Sylla AI…");
+
+	const epoch = syllaEpoch;
+	const result = await alignLyricsApi(trackInfo, current);
+	// Track changed mid request, onTrackChange handles the button
+	if (epoch !== syllaEpoch) return;
+	if (!result.ok) {
+		retiming = false;
+		if (result.alreadyAligned) toast(alreadyAlignedMsg(result.alreadyAligned));
+		else toastErr(`AI retime failed (${result.detail || result.status})`);
+		unlockFlush();
+		return;
+	}
+
+	loadSyllaLyrics(trackInfo, result.data, "retimed");
+};
+
+// Cache Sylla lyrics then reload so they show
+const loadSyllaLyrics = (
+	trackInfo: TrackInfo,
+	data: AlignResponse,
+	kind: "retimed" | "generated",
+): void => {
+	retiming = false;
+	toast(`Lyrics ${kind} with AI (${Math.round(data.confidence * 100)}% confidence)`);
+	cachedLyricsKey = lyricsCacheKey(trackInfo.title, trackInfo.artist, trackInfo.isrc);
+	cachedLyricsData = {
+		...data.lyrics,
+		_synthesized: true,
+		_synthesisType: kind === "generated" ? "Generate" : "Align",
+		_confidence: data.confidence,
+	};
+	onTrackChange();
+};
+
+// Auto Sylla job (once per track)
+// Both need the Radiant AI setting btw
+//   gen: no lyrics = Sylla makes
+//   align: Line only = Sylla Retimes (makes Syllables)
+const autoSylla = (
+	trackInfo: TrackInfo,
+	mode: "gen" | "align",
+	source?: LyricsApiResponse,
+): boolean => {
+	if (!settings.allowAI || !settings.radiantAI) return false;
+	const tip = mode === "gen" ? "Generating lyrics with Sylla…" : "Generating syllables with Sylla…";
+	if (autoSyllaTrackId === trackInfo.trackId) {
+		// Rebuilt mid job keeps the spinner (failed jobs don't retry)
+		if (autoSyllaRunning) setFlushTip(tip);
+		return autoSyllaRunning;
+	}
+	autoSyllaTrackId = trackInfo.trackId;
+	autoSyllaRunning = true;
+	retiming = true;
+	lockFlush();
+	setFlushTip(tip);
+
+	const epoch = syllaEpoch;
+	const job =
+		mode === "align" && source ? alignLyricsApi(trackInfo, source) : generateLyricsApi(trackInfo);
+	void job.then((result) => {
+		if (epoch !== syllaEpoch) return;
+		autoSyllaRunning = false;
+		retiming = false;
+		if (!result.ok) {
+			trace.log(
+				`Sylla ${mode === "gen" ? "Gen" : "Align"}: kept ${mode === "gen" ? "no lyrics" : "line lyrics"} (${result.verdict ?? (result.detail || result.status)})`,
+			);
+			if (mode === "gen") disableFlushNoLyrics();
+			else unlockFlush();
+			return;
+		}
+		loadSyllaLyrics(trackInfo, result.data, mode === "gen" ? "generated" : "retimed");
+	});
+	return true;
+};
+
+// Cancel the auto job so its result gets dropped
+const cancelAutoSylla = (): void => {
+	if (!autoSyllaRunning) return;
+	syllaEpoch++;
+	autoSyllaRunning = false;
+	retiming = false;
+	autoSyllaTrackId = null;
+};
+
 const flushBtn = function (): void {
 	const closeButton = document.querySelector(
 		'[data-test="new-now-playing-close"]',
@@ -679,7 +829,7 @@ const flushBtn = function (): void {
 	flushButton.removeAttribute("data-test");
 	flushButton.setAttribute("type", "button");
 	flushButton.setAttribute("aria-label", "Flush Lyrics");
-	flushButton.setAttribute("data-tip", "Flush Lyrics");
+	flushButton.setAttribute("title", "Flush Lyrics");
 	flushButton.disabled = true;
 	flushButton.style.opacity = "0.3";
 	flushButton.style.cursor = "not-allowed";
@@ -699,7 +849,7 @@ const flushBtn = function (): void {
 	flushButton.appendChild(spanWrapper);
 	// Recreated while loading, show the spinner again
 	if (flushSpinning) {
-		flushButton.setAttribute("data-tip", "Loading lyrics…");
+		flushButton.setAttribute("title", "Loading lyrics…");
 		flushButton.setAttribute("aria-label", "Loading lyrics…");
 		setFlushSpinner(true);
 	}
@@ -711,6 +861,7 @@ const flushBtn = function (): void {
 		flushButton,
 		hideBtn ?? closeButton,
 	);
+	syncRetimeStyle();
 };
 
 const createHideUIButton = function (): void {
@@ -1246,16 +1397,19 @@ const applyLyricsMenuIcon = (): void => {
 
 const LYRICS_MENU_TIP = "Lyrics Options";
 
-// Rainbow sparkle when syllables are AI generated
+// Rainbow sparkle for Sylla Align / Generate lyrics
 const syncAiIndicator = (): void => {
-	document.body.classList.toggle("rl-ai-lyrics", lyricsIsAiGenerated);
+	const showAi = lyricsIsAiGenerated && settings.allowAI;
+	document.body.classList.toggle("rl-ai-lyrics", showAi);
 	document
 		.querySelector(".rl-lyrics-menu-trigger")
 		?.setAttribute(
 			"title",
-			lyricsIsAiGenerated
-				? "Syllable Lyrics were generated using AI"
-				: LYRICS_MENU_TIP,
+			!showAi
+				? LYRICS_MENU_TIP
+				: aiSynthesisType === "Generate"
+					? "Lyrics were generated by Sylla AI"
+					: "Lyrics were timed by Sylla AI",
 		);
 };
 unloads.add(() => document.body.classList.remove("rl-ai-lyrics"));
@@ -1370,9 +1524,21 @@ const ensureLyricsMenu = (): HTMLElement => {
 			</label>
 		</div>
 		<div class="rl-lyrics-menu-row">
-			<span class="rl-lyrics-menu-label">AI Syllables WIP</span>
+			<span class="rl-lyrics-menu-label">Translation</span>
 			<label class="rl-lyrics-menu-switch">
-				<input type="checkbox" data-setting="aiSyllables" ${settings.aiSyllables ? "checked" : ""}>
+				<input type="checkbox" data-setting="translateLyrics" ${settings.translateLyrics ? "checked" : ""}>
+				<span class="rl-lyrics-menu-slider"></span>
+			</label>
+		</div>
+		<div class="rl-lyrics-menu-row rl-language-row"${settings.translateLyrics ? "" : " hidden"}>
+			<select class="rl-lyrics-menu-select" data-setting="translateLanguage">
+				${TRANSLATE_LANGUAGES.map((l) => `<option value="${l.value}"${settings.translateLanguage === l.value ? " selected" : ""}>${l.label}</option>`).join("")}
+			</select>
+		</div>
+		<div class="rl-lyrics-menu-row" data-ai-feature title="Generates and Re-times lyrics with Sylla AI"${settings.allowAI ? "" : " hidden"}>
+			<span class="rl-lyrics-menu-label">Radiant AI</span>
+			<label class="rl-lyrics-menu-switch">
+				<input type="checkbox" data-setting="radiantAI" ${settings.radiantAI ? "checked" : ""}>
 				<span class="rl-lyrics-menu-slider"></span>
 			</label>
 		</div>
@@ -1385,14 +1551,14 @@ const ensureLyricsMenu = (): HTMLElement => {
 		</div>
 	`;
 
-	// AI Generated Syllables (Radiant AI [RL API])
-	const synthCheckbox = dropdown.querySelector(
-		'input[data-setting="aiSyllables"]',
+	// Radiant AI (same as the setting)
+	const radiantAICheckbox = dropdown.querySelector(
+		'input[data-setting="radiantAI"]',
 	) as HTMLInputElement;
-	synthCheckbox.addEventListener("change", () => {
-		settings.aiSyllables = synthCheckbox.checked;
-		(window as any).updateAiSyllablesSetting?.(synthCheckbox.checked);
-		updateAiSyllablesFromSettings();
+	radiantAICheckbox.addEventListener("change", () => {
+		settings.radiantAI = radiantAICheckbox.checked;
+		(window as any).updateRadiantAISetting?.(radiantAICheckbox.checked);
+		updateRadiantAIFromSettings();
 	});
 
 	// Romanization (mirrors the Romanize Lyrics setting)
@@ -1403,6 +1569,26 @@ const ensureLyricsMenu = (): HTMLElement => {
 		settings.romanizeLyrics = romanizeCheckbox.checked;
 		(window as any).updateRomanizeLyricsSetting?.(romanizeCheckbox.checked);
 		updateRomanizeLyricsFromSettings();
+	});
+
+	// Translate (same as the setting)
+	const translateCheckbox = dropdown.querySelector(
+		'input[data-setting="translateLyrics"]',
+	) as HTMLInputElement;
+	translateCheckbox.addEventListener("change", () => {
+		settings.translateLyrics = translateCheckbox.checked;
+		(window as any).updateTranslateLyricsSetting?.(translateCheckbox.checked);
+		updateTranslateLyricsFromSettings();
+	});
+
+	// Translation language (same as the setting)
+	const languageSelect = dropdown.querySelector(
+		'select[data-setting="translateLanguage"]',
+	) as HTMLSelectElement;
+	languageSelect.addEventListener("change", () => {
+		settings.translateLanguage = languageSelect.value;
+		(window as any).updateTranslateLanguageSetting?.(languageSelect.value);
+		updateTranslateLyricsFromSettings();
 	});
 
 	const styleNames = ["Line", "Word", "Syllable"];
@@ -1597,6 +1783,7 @@ let trackChangeToken = 0;
 let lyricsData: WordLine[] | null = null;
 let lyricsResponse: LyricsApiResponse | null = null;
 let lyricsIsAiGenerated = false;
+let aiSynthesisType: "Align" | "Generate" | null = null;
 let lyricsMode: LyricsOverlayMode = "none";
 let tickLoopUnload: LunaUnload | null = null;
 let isActive = false;
@@ -1655,6 +1842,48 @@ const getNativeTrackEntity = (trackId: string): any | null =>
 const trackHasNativeLyrics = (trackId: string): boolean => {
 	const rel = getNativeTrackEntity(trackId)?.relationships?.lyrics?.data;
 	return Array.isArray(rel) && rel.length > 0;
+};
+
+// TIDAL's own synced lyrics (from redux, not the DOM) as rl-api Line shape
+// Used as Sylla Align input when RL API has nothing
+const getNativeTidalLineLyrics = (trackInfo: TrackInfo): LyricsApiResponse | null => {
+	const rel = getNativeTrackEntity(trackInfo.trackId)?.relationships?.lyrics?.data;
+	const lyricsId = Array.isArray(rel) ? rel[0]?.id : undefined;
+	if (!lyricsId) return null;
+	const attrs = getReduxState(true)?.entities?.lyrics?.entities?.[lyricsId]?.attributes;
+	const lrc: unknown = attrs?.lrcText;
+	if (typeof lrc !== "string" || !lrc.trim()) return null;
+
+	const timed: Array<{ start: number; text: string }> = [];
+	for (const raw of lrc.split(/\r?\n/)) {
+		const m = raw.match(/^\s*\[(\d+):(\d+(?:\.\d+)?)\](.*)$/);
+		if (!m) continue;
+		timed.push({ start: Number(m[1]) * 60 + Number(m[2]), text: m[3].trim() });
+	}
+	const data: ApiLine[] = [];
+	timed.forEach((line, i) => {
+		if (!line.text) return;
+		const end = timed[i + 1]?.start ?? line.start + 5;
+		data.push({
+			text: line.text,
+			startTime: line.start,
+			duration: Math.max(0, Math.round((end - line.start) * 1000) / 1000),
+			endTime: end,
+			element: { key: `L${data.length + 1}`, singer: "v1" },
+		});
+	});
+	if (data.length === 0) return null;
+
+	const last = data[data.length - 1];
+	return {
+		type: "Line",
+		data,
+		metadata: {
+			title: trackInfo.title,
+			language: "",
+			totalDuration: String(last.endTime),
+		},
+	};
 };
 
 const currentTrackWantsLyricsPanel = (): boolean =>
@@ -1997,7 +2226,36 @@ interface LineEntry {
 	words: WordEntry[];
 	bgWords: WordEntry[];
 	isBg: boolean; // entirely background/adlib line
+	transWords?: TransWordEntry[]; // timed translation words (not in time order)
 }
+
+// 0 = not reached, 1 = singing, 2 = done
+interface TransWordEntry extends WordEntry {
+	state?: 0 | 1 | 2;
+}
+
+// Translated words are out of order so each times itself
+const syncTranslationWords = (
+	line: LineEntry,
+	nowMs: number,
+	isSyl: boolean,
+): void => {
+	if (!line.transWords) return;
+	const CLS_ACTIVE = isSyl ? "rl-syl-active" : "rl-wbw-active";
+	const CLS_FINISHED = isSyl ? "rl-syl-finished" : "rl-wbw-finished";
+	for (const w of line.transWords) {
+		const state = nowMs >= w.end ? 2 : nowMs >= w.start ? 1 : 0;
+		if (w.state === state) continue;
+		w.state = state;
+		w.el.classList.toggle(CLS_ACTIVE, state === 1);
+		w.el.classList.toggle(CLS_FINISHED, state === 2);
+		if (isSyl) {
+			w.el.style.animation =
+				state === 1 ? `rl-wipe ${w.duration}ms linear forwards` : "";
+			w.el.style.animationDelay = state === 1 ? `-${nowMs - w.start}ms` : "";
+		}
+	}
+};
 
 let lines: LineEntry[] = [];
 let rerenderObserver: MutationObserver | null = null;
@@ -2481,35 +2739,17 @@ let cachedLyricsKey: string | null = null;
 let cachedLyricsData: LyricsApiResponse | null = null;
 let cachedTidalRomanizeKey: string | null = null;
 let cachedTidalRomanizedLines: string[] | null = null;
+const lyricsCacheKey = (title: string, artist: string, isrc?: string): string =>
+	`${title}\0${artist}\0${isrc ?? ""}\0${settings.allowAI ? "" : "n"}${settings.romanizeLyrics ? "r" : ""}${settings.translateLyrics ? `t${settings.translateLanguage}` : ""}`;
 const fetchLyrics = async (
 	title: string,
 	artist: string,
 	isrc?: string,
 ): Promise<LyricsApiResponse | null> => {
-	const cacheKey = `${title}\0${artist}\0${isrc ?? ""}\0${settings.romanizeLyrics ? "r" : ""}${settings.aiSyllables ? "a" : ""}`;
+	const cacheKey = lyricsCacheKey(title, artist, isrc);
 	if (cachedLyricsKey === cacheKey) {
 		sylLog(`[RL-Syllable] Cache hit for "${title}" by "${artist}"`);
 		return cachedLyricsData;
-	}
-
-	// AI toggled off mid song, AI response has the original lines (no refetch)
-	if (
-		!settings.aiSyllables &&
-		cachedLyricsKey === `${cacheKey}a` &&
-		cachedLyricsData?.type === "Word" &&
-		cachedLyricsData._synthesized &&
-		cachedLyricsData.lines
-	) {
-		const derived: LineLyricsResponse = {
-			type: "Line",
-			data: cachedLyricsData.lines,
-			metadata: cachedLyricsData.metadata,
-			_cached: cachedLyricsData._cached,
-		};
-		cachedLyricsKey = cacheKey;
-		cachedLyricsData = derived;
-		sylLog(`[RL-Syllable] AI off — using line timings from the AI response`);
-		return derived;
 	}
 
 	const data = await fetchLyricsApi(
@@ -2517,7 +2757,6 @@ const fetchLyrics = async (
 		artist,
 		isrc,
 		settings.romanizeLyrics,
-		settings.aiSyllables,
 	);
 	cachedLyricsKey = cacheKey;
 	cachedLyricsData = data;
@@ -3034,6 +3273,34 @@ const buildWordSpans = (): {
 			}
 		}
 
+		// Translation sit above the line
+		const lineTransWords: TransWordEntry[] = [];
+		if (settings.translateLyrics && needsTranslation(apiLine)) {
+			const translationEl = document.createElement("p");
+			translationEl.className = "rl-wbw-translation";
+			forceStyle(translationEl, { margin: "0" });
+			// Word/Syllable: translated words light up with their syllable
+			const timed = effectiveStyle !== 0 ? apiLine.translationSyllabus : undefined;
+			if (timed && timed.length > 0) {
+				for (const tw of timed) {
+					const span = makeSpan(tw.text.trimEnd(), syllabus[0].time, false);
+					translationEl.appendChild(span);
+					if (tw.text !== tw.text.trimEnd()) {
+						translationEl.appendChild(document.createTextNode(" "));
+					}
+					lineTransWords.push({
+						el: span,
+						start: tw.time,
+						end: tw.time + tw.duration,
+						duration: tw.duration,
+					});
+				}
+			} else {
+				translationEl.textContent = apiLine.translation;
+			}
+			lineDiv.prepend(translationEl);
+		}
+
 		wbwContainer.appendChild(lineDiv);
 
 		const allWords = lineWords.length > 0 ? lineWords : lineBgWords;
@@ -3054,6 +3321,7 @@ const buildWordSpans = (): {
 				words: allWords,
 				bgWords: lineBgWords,
 				isBg: allAreBg,
+				transWords: lineTransWords,
 			});
 		}
 	}
@@ -3325,6 +3593,7 @@ const applyActiveLineStateNoTransition = (): void => {
 	for (const lineIdx of activeLineIdxs) {
 		if (lineIdx >= lines.length) continue;
 		const currentLine = lines[lineIdx];
+		syncTranslationWords(currentLine, nowMs, isSyl);
 
 		if (isLineStyle) {
 			for (const w of currentLine.words) {
@@ -3615,6 +3884,7 @@ const teardown = (): void => {
 	lyricsData = null;
 	lyricsResponse = null;
 	lyricsIsAiGenerated = false;
+	aiSynthesisType = null;
 	syncAiIndicator();
 	lines = [];
 	activeWordEls.clear();
@@ -4017,6 +4287,7 @@ const startTickLoop = (): void => {
 
 			for (const lineIdx of activeLineIdxs) {
 				const currentLine = lines[lineIdx];
+				syncTranslationWords(currentLine, nowMs, isSyl);
 				const prevActiveWord = activeWordEls.get(lineIdx) ?? null;
 
 				let activeWordIdx = -1;
@@ -4173,7 +4444,13 @@ const onTrackChange = async (): Promise<void> => {
 		if (token !== trackChangeToken) return;
 		if (!response) {
 			trace.log("RL API: no API lyrics available, falling back to TIDAL lines");
-			disableFlushNoLyrics();
+			// TIDAL has synced lines: Sylla aligns those, else it generates from scratch
+			const tidalSource = getNativeTidalLineLyrics(trackInfo);
+			if (tidalSource) sylTrace(`Sylla: using ${tidalSource.data.length} TIDAL lines as align input`);
+			const started = tidalSource
+				? autoSylla(trackInfo, "align", tidalSource)
+				: autoSylla(trackInfo, "gen");
+			if (!started) disableFlushNoLyrics();
 			const tidalTexts = getTidalLines();
 			const romanized = settings.romanizeLyrics
 				? await romanizeLyrics(tidalTexts)
@@ -4213,18 +4490,30 @@ const onTrackChange = async (): Promise<void> => {
 		}
 
 		sylTrace(`RL API: loaded ${response.data.length} lines`);
+		if (settings.translateLyrics && response._translated === false) {
+			trace.log(
+				`RL API: translation failed${response._translationError ? ` | ${response._translationError}` : ""}`,
+			);
+		}
 		sylLog(
 			`[RL-Syllable] Loaded "${trackInfo.title}" by "${trackInfo.artist}" — ${response.data.length} lines`,
 		);
 
-		unlockFlush();
+		// Line only: Radiant AI retimes
+		const aligning = response.type === "Line" && autoSylla(trackInfo, "align", response);
+		if (!aligning) unlockFlush();
 
-		// MARKER: Radiant AI Syllables [RL API]
-		if (response.type === "Word" && response._synthesized) {
+		// MARKER: Sylla AI lyrics [RL API]
+		if (
+			response.type === "Word" &&
+			response._synthesized &&
+			(response._synthesisType === "Align" || response._synthesisType === "Generate")
+		) {
 			lyricsIsAiGenerated = true;
+			aiSynthesisType = response._synthesisType;
 			syncAiIndicator();
 			sylLog(
-				`[RL-Syllable] AI generated syllable timings for ${response.data.length} lines`,
+				`[RL-Syllable] Sylla ${response._synthesisType} lyrics (${response._modelVersion ?? response._model ?? "?"}, conf ${response._confidence ?? "?"})`,
 			);
 		}
 
@@ -4377,34 +4666,74 @@ const updateLyricsStyleFromSettings = (): void => {
 };
 (window as any).updateLyricsStyle = updateLyricsStyleFromSettings;
 
-const updateRomanizeLyricsFromSettings = (): void => {
-	const checkbox = document.querySelector(
-		'input[data-setting="romanizeLyrics"]',
-	) as HTMLInputElement | null;
-	if (checkbox) checkbox.checked = settings.romanizeLyrics;
+// Romanize + translate change the API response (refetch)
+const updateLyricsTextMode = (): void => {
+	for (const [key, on] of [
+		["romanizeLyrics", settings.romanizeLyrics],
+		["translateLyrics", settings.translateLyrics],
+	] as const) {
+		const checkbox = document.querySelector(
+			`input[data-setting="${key}"]`,
+		) as HTMLInputElement | null;
+		if (checkbox) checkbox.checked = on;
+	}
+	const languageSelect = document.querySelector(
+		'select[data-setting="translateLanguage"]',
+	) as HTMLSelectElement | null;
+	if (languageSelect) languageSelect.value = settings.translateLanguage;
+	// Language only matters while translating
+	const languageRow = document.querySelector<HTMLElement>(".rl-language-row");
+	if (languageRow) languageRow.hidden = !settings.translateLyrics;
 	cachedLyricsKey = null;
 	cachedLyricsData = null;
 	cachedTidalRomanizeKey = null;
 	cachedTidalRomanizedLines = null;
 	toggle();
 };
+const updateRomanizeLyricsFromSettings = updateLyricsTextMode;
+const updateTranslateLyricsFromSettings = updateLyricsTextMode;
 (window as any).updateRomanizeLyrics = updateRomanizeLyricsFromSettings;
+(window as any).updateTranslateLyrics = updateTranslateLyricsFromSettings;
 
-// Turning AI off reuses the line timings the AI response already has (no refetch). turning it on refetches with ?synthesize=true
-const updateAiSyllablesFromSettings = (): void => {
-	const checkbox = document.querySelector(
-		'input[data-setting="aiSyllables"]',
-	) as HTMLInputElement | null;
-	if (checkbox) checkbox.checked = settings.aiSyllables;
-	sylLog(
-		`[RL-Syllable] AI Generated Syllables ${settings.aiSyllables ? "enabled" : "disabled"}`,
-	);
+// AI Features: show/hide AI stuff (refetch)
+const updateAllowAIFromSettings = (): void => {
+	const allow = settings.allowAI;
+	if (!allow) {
+		retimeTrackId = null;
+		cancelAutoSylla();
+	}
+	document.querySelectorAll<HTMLElement>("[data-ai-feature]").forEach((el) => {
+		el.hidden = !allow;
+	});
+	syncAiIndicator();
+	sylLog(`[RL-Syllable] AI features ${allow ? "allowed" : "disabled"}`);
+	cachedLyricsKey = null;
+	cachedLyricsData = null;
 	toggle();
 };
-(window as any).updateAiSyllables = updateAiSyllablesFromSettings;
+(window as any).updateAllowAI = updateAllowAIFromSettings;
+
+// Radiant AI: off drops Sylla lyrics (killswitch)
+const updateRadiantAIFromSettings = (): void => {
+	const checkbox = document.querySelector(
+		'input[data-setting="radiantAI"]',
+	) as HTMLInputElement | null;
+	if (checkbox) checkbox.checked = settings.radiantAI;
+	cancelAutoSylla();
+	autoSyllaTrackId = null;
+	cachedLyricsKey = null;
+	cachedLyricsData = null;
+	toggle();
+};
+(window as any).updateRadiantAI = updateRadiantAIFromSettings;
 
 // Update lyrics on track change (wipe cache for new song)
 onGlobalTrackChange(() => {
+	retimeTrackId = null;
+	retiming = false;
+	autoSyllaTrackId = null;
+	autoSyllaRunning = false;
+	syllaEpoch++;
 	cachedLyricsKey = null;
 	cachedLyricsData = null;
 	cachedTidalRomanizeKey = null;
