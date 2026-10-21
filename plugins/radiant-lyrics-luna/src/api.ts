@@ -426,6 +426,42 @@ type SyllaResult =
 			alreadyAligned?: SyllaAlreadyAligned;
 		};
 
+// Place in the Sylla queue
+export interface SyllaQueue {
+	position: number;
+	size: number;
+}
+
+export interface SyllaJobOptions {
+	// Called in line (null of job running)
+	onQueue?: (queue: SyllaQueue | null) => void;
+	signal?: AbortSignal;
+}
+
+// Queue fields Sylla puts on job replies
+interface SyllaQueueFields {
+	queued?: boolean;
+	queue_position?: number;
+	queue_size?: number;
+}
+
+// One line of a stream=true reply
+interface SyllaStreamEvent extends SyllaQueueFields {
+	event?: "queue" | "done";
+	id?: string;
+	status?: number;
+	body?: unknown;
+}
+
+// No line for this long = dead
+const SYLLA_IDLE_TIMEOUT_MS = 240000;
+const SYLLA_JOB_TIMEOUT_MS = 600000;
+
+const queueOf = (fields: SyllaQueueFields | null | undefined): SyllaQueue | null =>
+	fields?.queued && typeof fields.queue_position === "number" && fields.queue_position > 0
+		? { position: fields.queue_position, size: fields.queue_size ?? fields.queue_position }
+		: null;
+
 // Query flags for sylla-align / sylla-gen
 const syllaQs = (): string =>
 	`?romanize=${settings.romanizeLyrics}&translate=${settings.translateLyrics}&language=${encodeURIComponent(settings.translateLanguage)}&ai-preference=${settings.allowAI}`;
@@ -434,15 +470,16 @@ const syllaQs = (): string =>
 export function alignLyrics(
 	track: { trackId: string; title: string; artist: string; isrc?: string },
 	lyrics: LyricsApiResponse,
+	options?: SyllaJobOptions,
 ): Promise<SyllaResult> {
-	return postSylla(`sylla-align${syllaQs()}`, "Sylla Align", {
+	return runSylla("sylla-align", "Sylla Align", {
 		tidal_id: track.trackId,
 		// Just the rl-api shape, not our own flags
 		lyrics: { type: lyrics.type, data: lyrics.data, metadata: lyrics.metadata },
 		isrc: track.isrc ?? "",
 		title: track.title,
 		artist: track.artist,
-	});
+	}, options);
 }
 
 // Make lyrics (takes longer..)
@@ -453,89 +490,157 @@ export function generateLyrics(
 		artist: string;
 		isrc?: string;
 	},
+	options?: SyllaJobOptions,
 ): Promise<SyllaResult> {
-	return postSylla(`sylla-gen${syllaQs()}`, "Sylla Gen", {
+	return runSylla("sylla-gen", "Sylla Gen", {
 		tidal_id: track.trackId,
 		isrc: track.isrc ?? "",
 		title: track.title,
 		artist: track.artist,
-	});
+	}, options);
 }
 
-async function postSylla(
+// ndjson body one line at a time
+async function* readLines(res: Response, onChunk: () => void): AsyncGenerator<string> {
+	if (!res.body) return;
+	const reader = res.body.getReader();
+	const decoder = new TextDecoder();
+	let buf = "";
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			onChunk();
+			buf += decoder.decode(value, { stream: true });
+			let nl = buf.indexOf("\n");
+			while (nl >= 0) {
+				const line = buf.slice(0, nl).trim();
+				buf = buf.slice(nl + 1);
+				if (line) yield line;
+				nl = buf.indexOf("\n");
+			}
+		}
+		buf += decoder.decode();
+		if (buf.trim()) yield buf.trim();
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+// stream=true queue lines while it waits (then a done line with the usual reply)
+async function runSylla(
 	endpoint: string,
 	label: string,
 	body: unknown,
+	{ onQueue, signal }: SyllaJobOptions = {},
 ): Promise<SyllaResult> {
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), 180000);
+	let idle: ReturnType<typeof setTimeout> | undefined;
+	const alive = () => {
+		clearTimeout(idle);
+		idle = setTimeout(() => controller.abort(), SYLLA_IDLE_TIMEOUT_MS);
+	};
+	const total = setTimeout(() => controller.abort(), SYLLA_JOB_TIMEOUT_MS);
+	const onAbort = () => controller.abort();
+	signal?.addEventListener("abort", onAbort, { once: true });
+	alive();
 	try {
-		const res = await fetch(`https://api.atomix.one/${endpoint}`, {
+		const res = await fetch(`https://api.atomix.one/${endpoint}${syllaQs()}&stream=true`, {
 			method: "POST",
 			headers: { "content-type": "application/json", ...(await auth()) },
 			body: JSON.stringify(body),
 			signal: controller.signal,
 		});
-		if (!res.ok) {
-			// 422 from sylla-gen has verdict + message, others just detail
-			let detail = "";
-			let verdict: string | undefined;
+		// Refusals before a job exists are plain JSON
+		if (!(res.headers.get("content-type") ?? "").includes("ndjson")) {
+			const reply = await res.json().catch(() => null);
+			if (!res.ok) return syllaError(res.status, reply, label);
+			return syllaResult(reply as AlignResponse, label, res.status);
+		}
+		for await (const line of readLines(res, alive)) {
+			let event: SyllaStreamEvent;
 			try {
-				const body = (await res.json()) as {
-					detail?: unknown;
-					message?: unknown;
-					verdict?: unknown;
-				};
-				if (typeof body?.message === "string") detail = body.message;
-				else if (typeof body?.detail === "string") detail = body.detail;
-				if (typeof body?.verdict === "string") verdict = body.verdict;
-				// Already Sylla lyrics (not a fail)
-				const d = body?.detail as
-					| ({ error?: unknown; message?: unknown } & SyllaAlreadyAligned)
-					| undefined;
-				if (res.status === 409 && d?.error === "already_aligned") {
-					sylTrace(`${label}: already aligned (${d.job}, conf ${d.confidence})`);
-					return {
-						ok: false,
-						status: 409,
-						detail: typeof d.message === "string" ? d.message : "already aligned",
-						verdict: "already_aligned",
-						alreadyAligned: { job: d.job, jobType: d.jobType, confidence: d.confidence },
-					};
+				event = JSON.parse(line) as SyllaStreamEvent;
+			} catch {
+				continue;
+			}
+			if (event.event === "queue") {
+				sylTrace(`${label}: job ${event.id} queue`, queueOf(event));
+				onQueue?.(queueOf(event));
+			} else if (event.event === "done") {
+				const status = event.status ?? 200;
+				if (status >= 200 && status < 300) {
+					return syllaResult(event.body as AlignResponse, label, status);
 				}
-			} catch {}
-			trace.log(
-				`${label}: request failed ${res.status}${verdict ? ` (${verdict})` : ""}${detail ? ` | ${detail}` : ""}`,
-			);
-			return { ok: false, status: res.status, detail: detail || verdict || "", verdict };
+				return syllaError(status, event.body, label);
+			}
 		}
-		const data = (await res.json()) as AlignResponse;
-		// Different version of the song (nothing changed so skip)
-		if (data?.verdict === "lyrics_do_not_match_audio") {
-			trace.log(`${label}: lyrics do not match the audio`);
-			return {
-				ok: false,
-				status: res.status,
-				detail: data.message || "lyrics don't match this version of the song",
-				verdict: data.verdict,
-			};
-		}
-		if (data?.lyrics?.type !== "Word" || !Array.isArray(data.lyrics.data)) {
-			trace.log(`${label}: response had no usable lyrics`);
-			return { ok: false, status: res.status, detail: "invalid response" };
-		}
-		sylTrace(
-			`${label}: ${data.model} verdict=${data.verdict} conf=${data.confidence}`,
-			data.stats,
-		);
-		return { ok: true, data };
+		trace.log(`${label}: stream ended without a result`);
+		return { ok: false, status: res.status, detail: "stream ended early" };
 	} catch (err) {
+		if (signal?.aborted) return { ok: false, status: 0, detail: "cancelled" };
 		const timedOut = err instanceof DOMException && err.name === "AbortError";
 		trace.log(`${label}: request ${timedOut ? "timed out" : `error | ${err}`}`);
 		return { ok: false, status: 0, detail: timedOut ? "timed out" : String(err) };
 	} finally {
-		clearTimeout(timeout);
+		clearTimeout(idle);
+		clearTimeout(total);
+		signal?.removeEventListener("abort", onAbort);
+		onQueue?.(null);
 	}
+}
+
+function syllaError(status: number, reply: unknown, label: string): SyllaResult {
+	// 422 from sylla-gen has verdict + message
+	let detail = "";
+	let verdict: string | undefined;
+	const body = reply as
+		| { detail?: unknown; message?: unknown; verdict?: unknown }
+		| null
+		| undefined;
+	if (typeof body?.message === "string") detail = body.message;
+	else if (typeof body?.detail === "string") detail = body.detail;
+	if (typeof body?.verdict === "string") verdict = body.verdict;
+	// Already Sylla lyrics (not a fail)
+	const d = body?.detail as
+		| ({ error?: unknown; message?: unknown } & SyllaAlreadyAligned)
+		| undefined;
+	if (status === 409 && d?.error === "already_aligned") {
+		sylTrace(`${label}: already aligned (${d.job}, conf ${d.confidence})`);
+		return {
+			ok: false,
+			status: 409,
+			detail: typeof d.message === "string" ? d.message : "already aligned",
+			verdict: "already_aligned",
+			alreadyAligned: { job: d.job, jobType: d.jobType, confidence: d.confidence },
+		};
+	}
+	trace.log(
+		`${label}: request failed ${status}${verdict ? ` (${verdict})` : ""}${detail ? ` | ${detail}` : ""}`,
+	);
+	return { ok: false, status, detail: detail || verdict || "", verdict };
+}
+
+function syllaResult(data: AlignResponse, label: string, status: number): SyllaResult {
+	// Different version of the song (nothing changed so skip)
+	if (data?.verdict === "lyrics_do_not_match_audio") {
+		trace.log(`${label}: lyrics do not match the audio`);
+		return {
+			ok: false,
+			status,
+			detail: data.message || "lyrics don't match this version of the song",
+			verdict: data.verdict,
+		};
+	}
+	if (data?.lyrics?.type !== "Word" || !Array.isArray(data.lyrics.data)) {
+		trace.log(`${label}: response had no usable lyrics`);
+		return { ok: false, status, detail: "invalid response" };
+	}
+	sylTrace(
+		`${label}: ${data.model} verdict=${data.verdict} conf=${data.confidence}`,
+		data.stats,
+	);
+	return { ok: true, data };
 }
 
 // Romanize

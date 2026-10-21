@@ -60,7 +60,7 @@ export const settings = await ReactiveStore.getPluginStorage("RadiantLyrics", {
 	// Off hides all AI stuff and skips AI lyrics
 	allowAI: true,
 	// Sylla makes missing lyrics & retimes Line lyrics (needs allowAI)
-	radiantAI: false,
+	radiantAI: true,
 	syllableStyle: 0, // MARKER: Syllable animations SETTINGS (WIP coming uhh.. later)
 	syllableLogging: false,
 	// Playback clock calibration in ms (i assume Lunar will break playback one day since MPV is wierd so i added this for that)

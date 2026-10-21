@@ -17,6 +17,8 @@ import {
 	alignLyrics as alignLyricsApi,
 	type AlignResponse,
 	type SyllaAlreadyAligned,
+	type SyllaJobOptions,
+	type SyllaQueue,
 	fetchLyrics as fetchLyricsApi,
 	flushLyrics as flushLyricsApi,
 	generateLyrics as generateLyricsApi,
@@ -562,6 +564,20 @@ let syllaEpoch = 0;
 // Track that already ran auto Sylla (so rebuilds don't requeue)
 let autoSyllaTrackId: string | null = null;
 let autoSyllaRunning = false;
+// Sylla job waiting in line (null = running or idle)
+let syllaQueue: SyllaQueue | null = null;
+let syllaAbort = new AbortController();
+unloads.add(() => syllaAbort.abort());
+
+const queueText = (q: SyllaQueue): string => `Sylla AI Queue (${q.position}/${q.size})`;
+
+// Drop the current job (track change)
+const resetSyllaJob = (): void => {
+	syllaEpoch++;
+	syllaAbort.abort();
+	syllaAbort = new AbortController();
+	syllaQueue = null;
+};
 
 const setFlushTip = (tip: string): void => {
 	const btn = document.querySelector(".flush-lyrics-button");
@@ -584,6 +600,28 @@ const syncRetimeStyle = (): void => {
 		document.body.appendChild(defs);
 	}
 	btn.classList.toggle("rl-retime", retiming || (!flushLocked && retimeTrackId !== null));
+	// Queued jobs spin slower
+	btn.classList.toggle("rl-queued", syllaQueue !== null);
+	if (syllaQueue) setFlushTip(queueText(syllaQueue));
+};
+
+// Queue updates for one job (toast when it enters the queue)
+const syllaJob = (epoch: number, tip: string): SyllaJobOptions => {
+	let toasted = false;
+	return {
+		signal: syllaAbort.signal,
+		onQueue: (queue) => {
+			if (epoch !== syllaEpoch) return;
+			if (queue && !toasted) {
+				toasted = true;
+				toast(`${queueText(queue)}, Please wait...`);
+			}
+			if (queue?.position === syllaQueue?.position && queue?.size === syllaQueue?.size) return;
+			syllaQueue = queue;
+			syncRetimeStyle();
+			if (!queue) setFlushTip(tip);
+		},
+	};
 };
 unloads.add(() => document.querySelector(".rl-retime-defs")?.remove());
 
@@ -727,12 +765,13 @@ const retimeLyrics = async (trackInfo: TrackInfo): Promise<void> => {
 		return;
 	}
 
+	const tip = "Retiming with Sylla AI…";
 	retiming = true;
 	lockFlush();
-	setFlushTip("Retiming with Sylla AI…");
+	setFlushTip(tip);
 
 	const epoch = syllaEpoch;
-	const result = await alignLyricsApi(trackInfo, current);
+	const result = await alignLyricsApi(trackInfo, current, syllaJob(epoch, tip));
 	// Track changed mid request, onTrackChange handles the button
 	if (epoch !== syllaEpoch) return;
 	if (!result.ok) {
@@ -777,7 +816,7 @@ const autoSylla = (
 	const tip = mode === "gen" ? "Generating lyrics with Sylla…" : "Generating syllables with Sylla…";
 	if (autoSyllaTrackId === trackInfo.trackId) {
 		// Rebuilt mid job keeps the spinner (failed jobs don't retry)
-		if (autoSyllaRunning) setFlushTip(tip);
+		if (autoSyllaRunning) setFlushTip(syllaQueue ? queueText(syllaQueue) : tip);
 		return autoSyllaRunning;
 	}
 	autoSyllaTrackId = trackInfo.trackId;
@@ -787,8 +826,11 @@ const autoSylla = (
 	setFlushTip(tip);
 
 	const epoch = syllaEpoch;
+	const options = syllaJob(epoch, tip);
 	const job =
-		mode === "align" && source ? alignLyricsApi(trackInfo, source) : generateLyricsApi(trackInfo);
+		mode === "align" && source
+			? alignLyricsApi(trackInfo, source, options)
+			: generateLyricsApi(trackInfo, options);
 	void job.then((result) => {
 		if (epoch !== syllaEpoch) return;
 		autoSyllaRunning = false;
@@ -809,7 +851,7 @@ const autoSylla = (
 // Cancel the auto job so its result gets dropped
 const cancelAutoSylla = (): void => {
 	if (!autoSyllaRunning) return;
-	syllaEpoch++;
+	resetSyllaJob();
 	autoSyllaRunning = false;
 	retiming = false;
 	autoSyllaTrackId = null;
@@ -4733,7 +4775,7 @@ onGlobalTrackChange(() => {
 	retiming = false;
 	autoSyllaTrackId = null;
 	autoSyllaRunning = false;
-	syllaEpoch++;
+	resetSyllaJob();
 	cachedLyricsKey = null;
 	cachedLyricsData = null;
 	cachedTidalRomanizeKey = null;

@@ -116,6 +116,15 @@
 	stroke: url(#rl-retime-gradient) !important;
 }
 
+/* Waiting in the Sylla queue.. a third of the speed */
+.flush-lyrics-button.rl-queued svg.rl-spinner {
+	animation-duration: 2.7s;
+}
+
+.flush-lyrics-button.rl-retime.rl-queued svg.rl-spinner {
+	animation-duration: 2.7s, 6s;
+}
+
 /* Retiming is busy not disabled, so no dimming */
 .flush-lyrics-button.rl-retime:disabled {
 	opacity: 1 !important;
@@ -1213,12 +1222,12 @@ body.rl-owns-lyric-scroll [class*="_syncButtonContainer_"] {
 	padding-bottom: calc(var(--rl-player-bar-inset, 98px) * .4 );
 }
 
-/*removes now-playing artwork border*/ 
+/*removes now-playing artwork border*/
 ._artworkTilt_1c6d5cc:after{
 	box-shadow: none;
 }
 
-/*makes glare effect's border-radius match artwork*/ 
+/*makes glare effect's border-radius match artwork*/
 ._glare_fdbaeab{
 	border-radius: 10px;
 }
