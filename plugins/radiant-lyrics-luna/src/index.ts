@@ -792,7 +792,7 @@ const loadSyllaLyrics = (
 	kind: "retimed" | "generated",
 ): void => {
 	retiming = false;
-	toast(`Lyrics ${kind} with AI (${Math.round(data.confidence * 100)}% confidence)`);
+	toast(`Lyrics ${kind} with Sylla AI (${Math.round(data.confidence * 100)}% confidence)`);
 	cachedLyricsKey = lyricsCacheKey(trackInfo.title, trackInfo.artist, trackInfo.isrc);
 	cachedLyricsData = {
 		...data.lyrics,
