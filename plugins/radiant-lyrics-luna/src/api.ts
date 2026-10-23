@@ -10,10 +10,11 @@ const sylTrace = (...args: unknown[]) => {
 
 export const RL_PLATFORM = "rl";
 
-const RL_ACCESS_TOKEN_ID = "58hy4s86";
-const RL_ACCESS_TOKEN = "xjehy2lfg5h5mjwotoxrcqugam";
-// Yup that's right, plaintext token in a public Repo!!
-// The API does not return sensitive data & won't be plain text like this in the future <3
+// Filled in at build (.env or CI secrets)
+declare const __RL_ACCESS_TOKEN_ID__: string;
+declare const __RL_ACCESS_TOKEN__: string;
+const RL_ACCESS_TOKEN_ID = __RL_ACCESS_TOKEN_ID__;
+const RL_ACCESS_TOKEN = __RL_ACCESS_TOKEN__;
 
 let cachedPublicIP: string | undefined;
 

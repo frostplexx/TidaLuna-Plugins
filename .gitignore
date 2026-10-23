@@ -4,3 +4,6 @@ Notes.md
 /Reference/
 # Local dev helpers
 /plugins/devtools-luna/
+
+# API creds
+.env

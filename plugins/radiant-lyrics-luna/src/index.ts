@@ -803,12 +803,12 @@ const loadSyllaLyrics = (
 	onTrackChange();
 };
 
-// Auto jobs wait until the song has played this long (rapid skips never reach Sylla)
+// Sylla waits 5s from song start (skip spam)
 const SYLLA_SETTLE_MS = 5000;
-// When the current track started (set on track change)
+// When this track started
 let trackStartedAt = 0;
 
-// true once the track stayed put, false if the job got dropped first
+// false if skipped before the wait ends
 const syllaSettle = (signal: AbortSignal): Promise<boolean> =>
 	new Promise((resolve) => {
 		if (signal.aborted) return resolve(false);
@@ -850,7 +850,7 @@ const autoSylla = (
 	const epoch = syllaEpoch;
 	const options = syllaJob(epoch, tip);
 	void syllaSettle(syllaAbort.signal).then(async (settled) => {
-		// Skipped before it settled, nothing ever reached Sylla
+		// Skipped, never reaches Sylla
 		if (!settled || epoch !== syllaEpoch) return;
 		const result = await (mode === "align" && source
 			? alignLyricsApi(trackInfo, source, options)
@@ -4479,9 +4479,9 @@ const startTickLoop = (): void => {
 	);
 };
 
-// Track changes this close together = user is skipping
+// Changes this close = skipping
 const SKIP_WINDOW_MS = 5000;
-// While skipping, hold the lyrics lookup this long (newer skip drops it)
+// Hold the lookup while skipping
 const LYRICS_SETTLE_MS = 1500;
 
 // Called by track change or style toggle
@@ -4502,7 +4502,7 @@ const onTrackChange = async (settleMs = 0): Promise<void> => {
 		}
 		const nativeHasLyrics = trackHasNativeLyrics(trackInfo.trackId);
 
-		// Aborting doesn't reach rl-bridge / rl-api / rl-backend, so don't send it yet
+		// Can't cancel once sent, so wait first
 		if (settleMs > 0) {
 			await new Promise<void>((resolve) => safeTimeout(unloads, resolve, settleMs));
 			if (token !== trackChangeToken) return;
