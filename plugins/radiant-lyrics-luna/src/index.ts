@@ -803,6 +803,28 @@ const loadSyllaLyrics = (
 	onTrackChange();
 };
 
+// Sylla waits 5s from song start (skip spam)
+const SYLLA_SETTLE_MS = 5000;
+// When this track started
+let trackStartedAt = 0;
+
+// false if skipped before the wait ends
+const syllaSettle = (signal: AbortSignal): Promise<boolean> =>
+	new Promise((resolve) => {
+		if (signal.aborted) return resolve(false);
+		const wait = trackStartedAt + SYLLA_SETTLE_MS - Date.now();
+		if (wait <= 0) return resolve(true);
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			resolve(false);
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve(true);
+		}, wait);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+
 // Auto Sylla job (once per track)
 // Both need the Radiant AI setting btw
 //   gen: no lyrics = Sylla makes
@@ -827,11 +849,12 @@ const autoSylla = (
 
 	const epoch = syllaEpoch;
 	const options = syllaJob(epoch, tip);
-	const job =
-		mode === "align" && source
+	void syllaSettle(syllaAbort.signal).then(async (settled) => {
+		// Skipped, never reaches Sylla
+		if (!settled || epoch !== syllaEpoch) return;
+		const result = await (mode === "align" && source
 			? alignLyricsApi(trackInfo, source, options)
-			: generateLyricsApi(trackInfo, options);
-	void job.then((result) => {
+			: generateLyricsApi(trackInfo, options));
 		if (epoch !== syllaEpoch) return;
 		autoSyllaRunning = false;
 		retiming = false;
@@ -4456,8 +4479,13 @@ const startTickLoop = (): void => {
 	);
 };
 
+// Changes this close = skipping
+const SKIP_WINDOW_MS = 5000;
+// Hold the lookup while skipping
+const LYRICS_SETTLE_MS = 1500;
+
 // Called by track change or style toggle
-const onTrackChange = async (): Promise<void> => {
+const onTrackChange = async (settleMs = 0): Promise<void> => {
 	teardown();
 	lockFlush();
 
@@ -4473,6 +4501,12 @@ const onTrackChange = async (): Promise<void> => {
 			return;
 		}
 		const nativeHasLyrics = trackHasNativeLyrics(trackInfo.trackId);
+
+		// Can't cancel once sent, so wait first
+		if (settleMs > 0) {
+			await new Promise<void>((resolve) => safeTimeout(unloads, resolve, settleMs));
+			if (token !== trackChangeToken) return;
+		}
 
 		sylTrace(
 			`RL API: looking up "${trackInfo.title}" by "${trackInfo.artist}"${trackInfo.isrc ? ` (ISRC: ${trackInfo.isrc})` : ""}`,
@@ -4771,6 +4805,9 @@ const updateRadiantAIFromSettings = (): void => {
 
 // Update lyrics on track change (wipe cache for new song)
 onGlobalTrackChange(() => {
+	const now = Date.now();
+	const skipping = now - trackStartedAt < SKIP_WINDOW_MS;
+	trackStartedAt = now;
 	retimeTrackId = null;
 	retiming = false;
 	autoSyllaTrackId = null;
@@ -4780,7 +4817,7 @@ onGlobalTrackChange(() => {
 	cachedLyricsData = null;
 	cachedTidalRomanizeKey = null;
 	cachedTidalRomanizedLines = null;
-	onTrackChange();
+	onTrackChange(skipping ? LYRICS_SETTLE_MS : 0);
 });
 unloads.add(() => teardown());
 

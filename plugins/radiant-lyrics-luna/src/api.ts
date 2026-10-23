@@ -10,10 +10,11 @@ const sylTrace = (...args: unknown[]) => {
 
 export const RL_PLATFORM = "rl";
 
-const RL_ACCESS_TOKEN_ID = "58hy4s86";
-const RL_ACCESS_TOKEN = "xjehy2lfg5h5mjwotoxrcqugam";
-// Yup that's right, plaintext token in a public Repo!!
-// The API does not return sensitive data & won't be plain text like this in the future <3
+// Filled in at build (.env or CI secrets)
+declare const __RL_ACCESS_TOKEN_ID__: string;
+declare const __RL_ACCESS_TOKEN__: string;
+const RL_ACCESS_TOKEN_ID = __RL_ACCESS_TOKEN_ID__;
+const RL_ACCESS_TOKEN = __RL_ACCESS_TOKEN__;
 
 let cachedPublicIP: string | undefined;
 
@@ -173,7 +174,7 @@ export async function fetchLyrics(
 	romanize: boolean,
 ): Promise<LyricsApiResponse | null> {
 	const params = query(title, artist, isrc, { romanize });
-	const atomixUrl = `https://api.atomix.one/rl-api${params}`;
+	const apiUrl = `https://api.radiant-lyrics.org/rl-api${params}`;
 	const fallbackUrl = `https://rl-api.kineticsand.net/lyrics${params}`;
 
 	const rlApiHeaders = await auth();
@@ -205,7 +206,7 @@ export async function fetchLyrics(
 		}
 	};
 
-	const primary = await tryFetch(atomixUrl, true);
+	const primary = await tryFetch(apiUrl, true);
 	if (primary.status === "ok") return primary.data;
 	if (primary.status === "404") {
 		trace.log("RL API: 404 — no API lyrics exist for this track");
@@ -362,7 +363,7 @@ export async function flushLyrics(track: {
 	const q = query(track.title, track.artist, track.isrc, {
 		flush: true,
 	});
-	const url = `https://api.atomix.one/rl-api${q}`;
+	const url = `https://api.radiant-lyrics.org/rl-api${q}`;
 	const headers = await auth();
 	const res = await fetch(url, { headers });
 	if (res.status === 404) {
@@ -545,7 +546,7 @@ async function runSylla(
 	signal?.addEventListener("abort", onAbort, { once: true });
 	alive();
 	try {
-		const res = await fetch(`https://api.atomix.one/${endpoint}${syllaQs()}&stream=true`, {
+		const res = await fetch(`https://api.radiant-lyrics.org/${endpoint}${syllaQs()}&stream=true`, {
 			method: "POST",
 			headers: { "content-type": "application/json", ...(await auth()) },
 			body: JSON.stringify(body),
@@ -680,7 +681,7 @@ async function postRomanize(
 	const romanizeQuery = `?${platformQs}`;
 	const urls: { url: string; useAtomixAuth: boolean }[] = [
 		{
-			url: `https://api.atomix.one/rl-api/romanize${romanizeQuery}`,
+			url: `https://api.radiant-lyrics.org/rl-api/romanize${romanizeQuery}`,
 			useAtomixAuth: true,
 		},
 		{
