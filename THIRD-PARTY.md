@@ -1,6 +1,6 @@
 # Third-party notices
 
-These plugins are licensed under the GPL-3.0 (see `LICENSE`). They incorporate or build on the
+These plugins are licensed under the GPL-3.0 (see `LICENSE`, plus `ADDITIONAL-TERMS.md`). They incorporate or build on the
 projects below, whose original licences and copyright notices are preserved as required.
 
 ---
