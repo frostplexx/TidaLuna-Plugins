@@ -112,10 +112,19 @@ Inrixia | [TidalLuna](https://github.com/Inrixia/TidaLuna) Plugin Framework (The
 
 ## Licence
 
-**GPL-3.0** — see `LICENSE`.
+Licensed under **GPL-3.0** ([`LICENSE`](LICENSE)), subject to the Section 7 additional terms in
+[`ADDITIONAL-TERMS.md`](ADDITIONAL-TERMS.md). In summary:
 
-Plain English: use it, change it, share it, even sell it. But if you distribute it (or a fork),
-you must ship the source under the GPL too — **no closed-source forks**, and per GPL-3 §5(a) a
-modified version has to carry a prominent notice saying it was modified and when.
+- **Copyleft:** you may use, modify, and redistribute this code, but any distributed version must
+  remain open source under GPL-3.0 and state that it has been modified.
+- **Attribution:** public projects using or derived from this code must credit it in their README
+  and prominently within the application, linking to [radiant-lyrics.org](https://radiant-lyrics.org)
+  or [this repository](https://github.com/meowarex/TidaLuna-Plugins).
 
-Third-party components and their licences are listed in `THIRD-PARTY.md`.
+> [!CAUTION]
+> **Hosted services are not covered by this licence.** The `api.radiant-lyrics.org` and
+> `api.atomix.one` endpoints, and any credentials contained in this code, are for use by the
+> official plugins only. Third-party use is not permitted and is actively enforced. Forks must
+> remove all references to these services. See [`ADDITIONAL-TERMS.md`](ADDITIONAL-TERMS.md).
+
+Third-party components and their licences are listed in [`THIRD-PARTY.md`](THIRD-PARTY.md).
